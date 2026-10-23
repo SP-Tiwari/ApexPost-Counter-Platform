@@ -10,16 +10,18 @@ public sealed class Branch
 	public string Region { get; }
 	public string OpeningHours { get; }
 	public bool IsActive { get; private set; }
-	public IReadOnlyList<string> CounterTerminals => _counterTerminals.AsReadOnly();
 
-	private readonly List<string> _counterTerminals = [];
+	private readonly List<CounterTerminal> _counterTerminals = [];
+
+	public IReadOnlyList<CounterTerminal> CounterTerminals =>
+		_counterTerminals.AsReadOnly();
 
 	public Branch(
 		BranchCode code,
 		string name,
 		string region,
 		string openingHours,
-		IEnumerable<string> counterTerminals)
+		IEnumerable<CounterTerminal> counterTerminals)
 	{
 		ArgumentNullException.ThrowIfNull(code);
 		ArgumentNullException.ThrowIfNull(counterTerminals);
@@ -33,16 +35,18 @@ public sealed class Branch
 		if (string.IsNullOrWhiteSpace(openingHours))
 			throw new ArgumentException("Opening hours cannot be empty.", nameof(openingHours));
 
-		var terminals = counterTerminals
-			.Select(terminal => terminal?.Trim())
-			.ToList();
+		var terminals = counterTerminals.ToList();
 
-		if (terminals.Count == 0 ||
-			terminals.Any(string.IsNullOrWhiteSpace) ||
-			terminals.Distinct(StringComparer.OrdinalIgnoreCase).Count() != terminals.Count)
+		if (terminals.Count == 0 || terminals.Any(terminal => terminal is null))
+			throw new ArgumentException(
+				"A branch must have at least one valid counter terminal.",
+				nameof(counterTerminals));
+
+		if (terminals.Select(t => t.Id)
+				.Distinct(StringComparer.OrdinalIgnoreCase).Count() != terminals.Count)
 		{
 			throw new ArgumentException(
-				"A branch must have at least one uniquely named counter terminal.",
+				"Counter terminal IDs must be unique.",
 				nameof(counterTerminals));
 		}
 
@@ -51,7 +55,8 @@ public sealed class Branch
 		Region = region.Trim();
 		OpeningHours = openingHours.Trim();
 		IsActive = true;
-		_counterTerminals.AddRange(terminals!);
+
+		_counterTerminals.AddRange(terminals);
 	}
 
 	public void Close() => IsActive = false;

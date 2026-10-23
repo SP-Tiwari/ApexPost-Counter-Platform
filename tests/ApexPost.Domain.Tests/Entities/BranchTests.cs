@@ -14,7 +14,10 @@ public class BranchTests
 			"Delhi Main",
 			"North",
 			"09:00-18:00",
-			["Counter-1", "Counter-2"]);
+			[
+				new CounterTerminal("C1", "Counter-1"),
+				new CounterTerminal("C2", "Counter-2")
+			]);
 
 		Assert.Equal("DEL01", branch.Code.Value);
 		Assert.Equal("Delhi Main", branch.Name);
@@ -66,11 +69,11 @@ public class BranchTests
 				" ",
 				"North",
 				"09:00-18:00",
-				["Counter-1"]));
+				[new CounterTerminal("C1", "Counter-1")]));
 	}
 
 	[Fact]
-	public void Constructor_WithDuplicateCounterTerminals_ThrowsArgumentException()
+	public void Constructor_WithDuplicateTerminalIds_ThrowsArgumentException()
 	{
 		Assert.Throws<ArgumentException>(() =>
 			new Branch(
@@ -78,7 +81,10 @@ public class BranchTests
 				"Delhi Main",
 				"North",
 				"09:00-18:00",
-				["Counter-1", "counter-1"]));
+				[
+					new CounterTerminal("C1", "Counter-1"),
+					new CounterTerminal("c1", "Counter-2")
+				]));
 	}
 
 	private static Branch CreateBranch() =>
@@ -87,5 +93,5 @@ public class BranchTests
 			"Delhi Main",
 			"North",
 			"09:00-18:00",
-			["Counter-1"]);
+			[new CounterTerminal("C1", "Counter-1")]);
 }
