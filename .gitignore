@@ -1,0 +1,50 @@
+# Build output
+**/bin/
+**/obj/
+**/out/
+
+# Visual Studio Code and IDE files
+.vscode/
+.vs/
+.idea/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Test and coverage output
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+secrets.json
+appsettings.Local.json
+
+# Local HTTPS development certificates
+*.pfx
+*.p12
+
+# Operating system files
+Thumbs.db
+.DS_Store
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Keep intentional source configuration files tracked
+# Do not add appsettings.json or appsettings.Development.json here.
+# Never commit real passwords, API keys, or other secrets.
