@@ -120,7 +120,9 @@ The implementation must enforce the following rules:
 
 \- Closed branches cannot process transactions.
 
-\- High-value money orders require successful identity verification in the same transaction.
+\- Money orders contain an amount, sender, recipient, and fee; amount and fee use the same currency, and the amount must be positive.
+\- Money orders above a configured threshold require successful identity verification; the threshold is supplied as configuration, not a domain default.
+\- Identity verification records retain only a masked document identifier showing its last four characters, never the full identifier.
 
 \- Parcel weight must not exceed the maximum for the selected service.
 \- Shipping rates are configured per destination zone and service level using a base price and per-kilogram charge in the same currency.
