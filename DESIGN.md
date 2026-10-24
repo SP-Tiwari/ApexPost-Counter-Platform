@@ -120,6 +120,8 @@ The implementation must enforce the following rules:
 
 \- Closed branches cannot process transactions.
 
+\- Only active Counter Clerks and Branch Managers can process baskets; Counter Clerks are limited to their assigned branch, while Branch Managers have no branch assignment restriction.
+
 \- Money orders contain an amount, sender, recipient, and fee; amount and fee use the same currency, and the amount must be positive.
 \- Money orders above a configured threshold require successful identity verification; the threshold is supplied as configuration, not a domain default.
 \- Identity verification records retain only a masked document identifier showing its last four characters, never the full identifier.
@@ -127,7 +129,7 @@ The implementation must enforce the following rules:
 \- Parcel weight must not exceed the maximum for the selected service.
 \- Shipping rates are configured per destination zone and service level using a base price and per-kilogram charge in the same currency.
 \- Maximum parcel weights are configured per service level; domain code provides no production prices or weight limits.
-\- Voiding or refunding a transaction requires Branch Manager authorization and a reason.
+\- Voiding or refunding a transaction requires an active Branch Manager and a non-empty reason, and must respect the basket's valid payment-status transition.
 
 \- Full identity document numbers must never be stored.
 
