@@ -63,7 +63,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	}
 
 	[Fact]
-	public async Task SignIn_WithoutCredentialProviderDoesNotAuthenticateSubmittedIdentity()
+	public async Task SignIn_RejectsPostWithoutAntiforgeryToken()
 	{
 		var storageDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-Web-NoAuth-{Guid.NewGuid():N}");
@@ -79,30 +79,35 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 				{
 					AllowAutoRedirect = false
 				});
-			var response = await client.GetAsync("/Transactions");
-
-			Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
-			Assert.Equal(
-				"/Account/SignIn",
-				response.Headers.Location?.AbsolutePath);
-
 			var signInResponse = await client.GetAsync("/Account/SignIn");
 			Assert.Equal(System.Net.HttpStatusCode.OK, signInResponse.StatusCode);
-			Assert.Contains(
-				"no credential validation provider",
-				await signInResponse.Content.ReadAsStringAsync(),
-				StringComparison.OrdinalIgnoreCase);
+			var signInHtml = await signInResponse.Content.ReadAsStringAsync();
+			Assert.Contains("name=\"StaffId\"", signInHtml);
+			Assert.Contains("name=\"Password\"", signInHtml);
 
 			var submittedIdentity = await client.PostAsync(
 				"/Account/SignIn",
 				new FormUrlEncodedContent(
 				[
 					new KeyValuePair<string, string>("staffId", "manager-1"),
+					new KeyValuePair<string, string>(
+						"password", "valid-test-password"),
+					new KeyValuePair<string, string>(
+						"returnUrl", "/Transactions"),
 					new KeyValuePair<string, string>("role", "BranchManager")
 				]));
 			Assert.Equal(
-				System.Net.HttpStatusCode.MethodNotAllowed,
+				System.Net.HttpStatusCode.BadRequest,
 				submittedIdentity.StatusCode);
+			Assert.Empty(await submittedIdentity.Content.ReadAsStringAsync());
+
+			var transactionResponse = await client.GetAsync("/Transactions");
+			Assert.Equal(
+				System.Net.HttpStatusCode.Redirect,
+				transactionResponse.StatusCode);
+			Assert.StartsWith(
+				"/Account/SignIn",
+				transactionResponse.Headers.Location?.AbsolutePath);
 		}
 		finally
 		{

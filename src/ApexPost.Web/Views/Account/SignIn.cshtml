@@ -1,7 +1,25 @@
+@model ApexPost.Web.Models.StaffSignInViewModel
 @{
     ViewData["Title"] = "Staff sign-in";
 }
 
 <h1>Staff sign-in</h1>
-<p>Staff sign-in is unavailable because no credential validation provider is configured.</p>
-<p>Contact your system administrator. Do not submit staff IDs or roles as credentials.</p>
+<form asp-controller="Account" asp-action="SignIn" method="post">
+    <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+    <input asp-for="ReturnUrl" type="hidden" />
+    <div class="mb-3">
+        <label asp-for="StaffId" class="form-label">Staff ID</label>
+        <input asp-for="StaffId" class="form-control" autocomplete="username" />
+        <span asp-validation-for="StaffId" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="Password" class="form-label">Password</label>
+        <input asp-for="Password" class="form-control" autocomplete="current-password" />
+        <span asp-validation-for="Password" class="text-danger"></span>
+    </div>
+    <button type="submit" class="btn btn-primary">Sign in</button>
+</form>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}
