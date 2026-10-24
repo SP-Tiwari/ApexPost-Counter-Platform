@@ -113,6 +113,7 @@ The implementation must enforce the following rules:
 
 
 \- Inventory stock must never become negative.
+\- Sales validate all branch/product stock requirements before deducting stock and marking the basket Paid; goods lines must reference a Product SKU, while service lines do not consume stock. Employee/branch transaction processing delegates to this sale workflow.
 
 \- Inactive staff cannot perform transactions.
 

@@ -15,7 +15,7 @@ public class TransactionProcessingRuleTests
 		var basket = CreateBasket();
 
 		Assert.Throws<InvalidOperationException>(() =>
-			new TransactionProcessingRule().Process(staff, CreateBranch(), basket));
+			Process(staff, CreateBranch(), basket));
 
 		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
 	}
@@ -25,9 +25,15 @@ public class TransactionProcessingRuleTests
 	{
 		var staff = CreateStaff(StaffRole.CounterClerk);
 		var basket = CreateBasket();
+		var stock = CreateStock("DEL01", 5);
 
-		new TransactionProcessingRule().Process(staff, CreateBranch(), basket);
+		Process(
+			staff,
+			CreateBranch(),
+			basket,
+			[stock]);
 
+		Assert.Equal(4, stock.Quantity);
 		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
 	}
 
@@ -39,7 +45,7 @@ public class TransactionProcessingRuleTests
 		var otherBranch = CreateBranch("MUM01");
 
 		Assert.Throws<InvalidOperationException>(() =>
-			new TransactionProcessingRule().Process(staff, otherBranch, basket));
+			Process(staff, otherBranch, basket));
 
 		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
 	}
@@ -51,7 +57,11 @@ public class TransactionProcessingRuleTests
 		var basket = CreateBasket();
 		var otherBranch = CreateBranch("MUM01");
 
-		new TransactionProcessingRule().Process(staff, otherBranch, basket);
+		Process(
+			staff,
+			otherBranch,
+			basket,
+			[CreateStock("MUM01", 5)]);
 
 		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
 	}
@@ -66,7 +76,7 @@ public class TransactionProcessingRuleTests
 		var basket = CreateBasket();
 
 		Assert.Throws<InvalidOperationException>(() =>
-			new TransactionProcessingRule().Process(staff, CreateBranch(), basket));
+			Process(staff, CreateBranch(), basket));
 
 		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
 	}
@@ -79,7 +89,7 @@ public class TransactionProcessingRuleTests
 		var basket = CreateBasket();
 
 		Assert.Throws<InvalidOperationException>(() =>
-			new TransactionProcessingRule().Process(
+			Process(
 				CreateStaff(StaffRole.CounterClerk),
 				branch,
 				basket));
@@ -93,7 +103,7 @@ public class TransactionProcessingRuleTests
 		var basket = CreateBasket(populate: false);
 
 		Assert.Throws<InvalidOperationException>(() =>
-			new TransactionProcessingRule().Process(
+			Process(
 				CreateStaff(StaffRole.CounterClerk),
 				CreateBranch(),
 				basket));
@@ -102,10 +112,27 @@ public class TransactionProcessingRuleTests
 	}
 
 	[Fact]
+	public void Process_WhenAuthorizedButStockIsInsufficient_LeavesBasketAndStockUnchanged()
+	{
+		var basket = CreateBasket();
+		var stock = CreateStock("DEL01", 0);
+
+		Assert.Throws<InvalidOperationException>(() =>
+			Process(
+				CreateStaff(StaffRole.CounterClerk),
+				CreateBranch(),
+				basket,
+				[stock]));
+
+		Assert.Equal(0, stock.Quantity);
+		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
+	}
+
+	[Fact]
 	public void Process_WithNullStaff_ThrowsArgumentNullException()
 	{
 		Assert.Throws<ArgumentNullException>(() =>
-			new TransactionProcessingRule().Process(
+			Process(
 				null!,
 				CreateBranch(),
 				CreateBasket()));
@@ -115,7 +142,7 @@ public class TransactionProcessingRuleTests
 	public void Process_WithNullBranch_ThrowsArgumentNullException()
 	{
 		Assert.Throws<ArgumentNullException>(() =>
-			new TransactionProcessingRule().Process(
+			Process(
 				CreateStaff(StaffRole.CounterClerk),
 				null!,
 				CreateBasket()));
@@ -125,7 +152,7 @@ public class TransactionProcessingRuleTests
 	public void Process_WithNullBasket_ThrowsArgumentNullException()
 	{
 		Assert.Throws<ArgumentNullException>(() =>
-			new TransactionProcessingRule().Process(
+			Process(
 				CreateStaff(StaffRole.CounterClerk),
 				CreateBranch(),
 				null!));
@@ -133,6 +160,20 @@ public class TransactionProcessingRuleTests
 
 	private static Staff CreateStaff(StaffRole role) =>
 		new("STAFF01", "Staff Member", "staff@example.com", role, new BranchCode("DEL01"));
+
+	private static void Process(
+		Staff staff,
+		Branch branch,
+		TransactionBasket basket,
+		IEnumerable<BranchStock>? branchStocks = null) =>
+		new TransactionProcessingRule().Process(
+			staff,
+			branch,
+			basket,
+			branchStocks ?? []);
+
+	private static BranchStock CreateStock(string branchCode, int quantity) =>
+		new(new BranchCode(branchCode), new Sku("BOX01"), quantity);
 
 	private static Branch CreateBranch(string code = "DEL01") =>
 		new(
@@ -154,11 +195,13 @@ public class TransactionProcessingRuleTests
 		if (populate)
 		{
 			basket.AddLineItem(new TransactionLineItem(
-				"Goods",
-				TransactionItemType.Goods,
-				new Money(10m, "INR"),
-				1,
-				TaxCategory.Standard));
+				new Product(
+					new Sku("BOX01"),
+					"Goods",
+					ProductCategory.Packaging,
+					new Money(10m, "INR"),
+					TaxCategory.Standard),
+				1));
 		}
 
 		return basket;

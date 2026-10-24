@@ -1,3 +1,4 @@
+using ApexPost.Domain;
 using ApexPost.Domain.Enums;
 using ApexPost.Domain.ValueObjects;
 
@@ -7,24 +8,37 @@ public sealed class TransactionBasket
 {
 	private readonly Dictionary<TaxCategory, decimal> _taxRates;
 	private readonly List<TransactionLineItem> _lineItems = [];
-
-	public string Currency { get; }
-	public TransactionPaymentStatus PaymentStatus { get; private set; } =
+	private TransactionPaymentStatus _paymentStatus =
 		TransactionPaymentStatus.Open;
 
+	public string Currency { get; }
+	public TransactionPaymentStatus PaymentStatus
+	{
+		get
+		{
+			lock (DomainMutationLock.Gate)
+				return _paymentStatus;
+		}
+		private set => _paymentStatus = value;
+	}
+
 	public IReadOnlyList<TransactionLineItem> LineItems =>
-		_lineItems.AsReadOnly();
+		GetLineItems();
 
 	public Money Subtotal =>
-		new(_lineItems.Sum(lineItem => lineItem.Subtotal.Amount), Currency);
+		GetSubtotal();
 
 	public Money Tax =>
-		new(
-			_lineItems.Sum(lineItem =>
-				lineItem.Subtotal.Amount * _taxRates[lineItem.TaxCategory]),
-			Currency);
+		GetTax();
 
-	public Money Total => new(Subtotal.Amount + Tax.Amount, Currency);
+	public Money Total
+	{
+		get
+		{
+			lock (DomainMutationLock.Gate)
+				return new(Subtotal.Amount + Tax.Amount, Currency);
+		}
+	}
 
 	public TransactionBasket(
 		string currency,
@@ -51,46 +65,80 @@ public sealed class TransactionBasket
 	public void AddLineItem(TransactionLineItem lineItem)
 	{
 		ArgumentNullException.ThrowIfNull(lineItem);
-		EnsureOpen();
 
-		if (!string.Equals(lineItem.UnitPrice.Currency, Currency, StringComparison.Ordinal))
-			throw new ArgumentException(
-				"Transaction line currency must match the basket currency.",
-				nameof(lineItem));
+		lock (DomainMutationLock.Gate)
+		{
+			EnsureOpen();
 
-		if (!_taxRates.ContainsKey(lineItem.TaxCategory))
-			throw new InvalidOperationException(
-				$"No tax rate is configured for category '{lineItem.TaxCategory}'.");
+			if (!string.Equals(lineItem.UnitPrice.Currency, Currency, StringComparison.Ordinal))
+				throw new ArgumentException(
+					"Transaction line currency must match the basket currency.",
+					nameof(lineItem));
 
-		_lineItems.Add(lineItem);
+			if (!_taxRates.ContainsKey(lineItem.TaxCategory))
+				throw new InvalidOperationException(
+					$"No tax rate is configured for category '{lineItem.TaxCategory}'.");
+
+			_lineItems.Add(lineItem);
+		}
 	}
 
 	public void Pay()
 	{
-		EnsureOpen();
+		lock (DomainMutationLock.Gate)
+		{
+			EnsureOpen();
 
-		if (_lineItems.Count == 0)
-			throw new InvalidOperationException(
-				"An empty transaction basket cannot be paid.");
+			if (_lineItems.Count == 0)
+				throw new InvalidOperationException(
+					"An empty transaction basket cannot be paid.");
 
-		PaymentStatus = TransactionPaymentStatus.Paid;
+			PaymentStatus = TransactionPaymentStatus.Paid;
+		}
 	}
 
 	public void Void()
 	{
-		EnsureOpen();
-		PaymentStatus = TransactionPaymentStatus.Voided;
+		lock (DomainMutationLock.Gate)
+		{
+			EnsureOpen();
+			PaymentStatus = TransactionPaymentStatus.Voided;
+		}
 	}
 
 	public void Refund()
 	{
-		if (PaymentStatus != TransactionPaymentStatus.Paid)
+		lock (DomainMutationLock.Gate)
 		{
-			throw new InvalidOperationException(
-				$"A transaction can only be refunded when its status is Paid; current status is '{PaymentStatus}'.");
-		}
+			if (PaymentStatus != TransactionPaymentStatus.Paid)
+			{
+				throw new InvalidOperationException(
+					$"A transaction can only be refunded when its status is Paid; current status is '{PaymentStatus}'.");
+			}
 
-		PaymentStatus = TransactionPaymentStatus.Refunded;
+			PaymentStatus = TransactionPaymentStatus.Refunded;
+		}
+	}
+
+	private IReadOnlyList<TransactionLineItem> GetLineItems()
+	{
+		lock (DomainMutationLock.Gate)
+			return _lineItems.AsReadOnly();
+	}
+
+	private Money GetSubtotal()
+	{
+		lock (DomainMutationLock.Gate)
+			return new(_lineItems.Sum(lineItem => lineItem.Subtotal.Amount), Currency);
+	}
+
+	private Money GetTax()
+	{
+		lock (DomainMutationLock.Gate)
+			return new(
+				_lineItems.Sum(lineItem =>
+					lineItem.Subtotal.Amount * _taxRates[lineItem.TaxCategory]),
+				Currency);
 	}
 
 	private void EnsureOpen()

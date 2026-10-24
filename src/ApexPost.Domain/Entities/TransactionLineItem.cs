@@ -10,6 +10,7 @@ public sealed class TransactionLineItem
 	public Money UnitPrice { get; }
 	public int Quantity { get; }
 	public TaxCategory TaxCategory { get; }
+	public Sku? ProductSku { get; }
 
 	public TransactionLineItem(
 		string description,
@@ -39,6 +40,23 @@ public sealed class TransactionLineItem
 		UnitPrice = unitPrice;
 		Quantity = quantity;
 		TaxCategory = taxCategory;
+		ProductSku = null;
+	}
+
+	public TransactionLineItem(Product product, int quantity)
+	{
+		ArgumentNullException.ThrowIfNull(product);
+
+		if (quantity <= 0)
+			throw new ArgumentOutOfRangeException(
+				nameof(quantity), "Transaction line quantity must be greater than zero.");
+
+		Description = product.Name;
+		Type = TransactionItemType.Goods;
+		UnitPrice = product.UnitPrice;
+		Quantity = quantity;
+		TaxCategory = product.TaxCategory;
+		ProductSku = product.Sku;
 	}
 
 	public Money Subtotal =>
