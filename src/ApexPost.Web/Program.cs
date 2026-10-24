@@ -1,8 +1,7 @@
 using ApexPost.Application.Persistence;
 using ApexPost.Application.Services;
 using ApexPost.Infrastructure.Persistence;
-using ApexPost.Web.Authentication;
-using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,11 +9,17 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllersWithViews();
 builder.Services.AddAuthentication(options =>
 	{
-		options.DefaultScheme = UnconfiguredAuthenticationHandler.SchemeName;
+		options.DefaultScheme =
+			CookieAuthenticationDefaults.AuthenticationScheme;
 	})
-	.AddScheme<AuthenticationSchemeOptions, UnconfiguredAuthenticationHandler>(
-		UnconfiguredAuthenticationHandler.SchemeName,
-		_ => { });
+	.AddCookie(options =>
+	{
+		options.LoginPath = "/Account/SignIn";
+		options.AccessDeniedPath = "/Account/AccessDenied";
+		options.Cookie.HttpOnly = true;
+		options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+		options.Cookie.SameSite = SameSiteMode.Lax;
+	});
 builder.Services.AddAuthorization();
 var storageDirectory = builder.Configuration["Storage:Directory"];
 if (string.IsNullOrWhiteSpace(storageDirectory))
