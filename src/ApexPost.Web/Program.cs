@@ -3,6 +3,7 @@ using ApexPost.Application.Security;
 using ApexPost.Application.Services;
 using ApexPost.Infrastructure.Persistence;
 using ApexPost.Web.Authentication;
+using ApexPost.Web.Middleware;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.Cookies;
 
@@ -80,6 +81,8 @@ builder.Services.AddRateLimiter(options =>
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+app.UseMiddleware<CorrelationIdMiddleware>();
+
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Home/Error");
