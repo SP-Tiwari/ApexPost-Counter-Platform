@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Text.RegularExpressions;
 using ApexPost.Application.Persistence;
 using ApexPost.Domain.Entities;
 using ApexPost.Domain.Enums;
@@ -62,7 +63,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	}
 
 	[Fact]
-	public async Task Index_WithoutConfiguredProductionScheme_FailsClosedWithUnauthorized()
+	public async Task SignIn_WithoutCredentialProviderDoesNotAuthenticateSubmittedIdentity()
 	{
 		var storageDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-Web-NoAuth-{Guid.NewGuid():N}");
@@ -73,17 +74,86 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			});
 		try
 		{
-			var response = await factory.CreateClient().GetAsync("/Transactions");
+			var client = factory.CreateClient(
+				new WebApplicationFactoryClientOptions
+				{
+					AllowAutoRedirect = false
+				});
+			var response = await client.GetAsync("/Transactions");
 
+			Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
 			Assert.Equal(
-				System.Net.HttpStatusCode.Unauthorized,
-				response.StatusCode);
+				"/Account/SignIn",
+				response.Headers.Location?.AbsolutePath);
+
+			var signInResponse = await client.GetAsync("/Account/SignIn");
+			Assert.Equal(System.Net.HttpStatusCode.OK, signInResponse.StatusCode);
+			Assert.Contains(
+				"no credential validation provider",
+				await signInResponse.Content.ReadAsStringAsync(),
+				StringComparison.OrdinalIgnoreCase);
+
+			var submittedIdentity = await client.PostAsync(
+				"/Account/SignIn",
+				new FormUrlEncodedContent(
+				[
+					new KeyValuePair<string, string>("staffId", "manager-1"),
+					new KeyValuePair<string, string>("role", "BranchManager")
+				]));
+			Assert.Equal(
+				System.Net.HttpStatusCode.MethodNotAllowed,
+				submittedIdentity.StatusCode);
 		}
 		finally
 		{
 			if (Directory.Exists(storageDirectory))
 				Directory.Delete(storageDirectory, recursive: true);
 		}
+	}
+
+	[Fact]
+	public async Task SignOut_RequiresAntiforgeryTokenAndClearsCookie()
+	{
+		var client = _factory.CreateClient(
+			new WebApplicationFactoryClientOptions
+			{
+				AllowAutoRedirect = false
+			});
+		client.DefaultRequestHeaders.Add("X-Test-Role", "BranchManager");
+		var page = await client.GetAsync("/Transactions");
+		Assert.Equal(System.Net.HttpStatusCode.OK, page.StatusCode);
+		var html = await page.Content.ReadAsStringAsync();
+		var token = Regex.Match(
+			html,
+			"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"")
+			.Groups[1].Value;
+		Assert.False(string.IsNullOrWhiteSpace(token));
+
+		var invalidRequest = await client.PostAsync(
+			"/Account/SignOut",
+			new FormUrlEncodedContent([]));
+		Assert.Equal(
+			System.Net.HttpStatusCode.BadRequest,
+			invalidRequest.StatusCode);
+
+		var signOut = await client.PostAsync(
+			"/Account/SignOut",
+			new FormUrlEncodedContent(
+			[
+				new KeyValuePair<string, string>(
+					"__RequestVerificationToken", token)
+			]));
+
+		Assert.Equal(System.Net.HttpStatusCode.Redirect, signOut.StatusCode);
+		Assert.StartsWith(
+			"/Account/SignIn",
+			signOut.Headers.Location?.OriginalString);
+		Assert.Contains(
+			signOut.Headers.GetValues("Set-Cookie"),
+			cookie => cookie.Contains(
+				".AspNetCore.Cookies=",
+				StringComparison.Ordinal) &&
+				cookie.Contains("expires=", StringComparison.OrdinalIgnoreCase));
 	}
 
 	[Fact]
