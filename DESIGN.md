@@ -141,7 +141,11 @@ A single counter transaction can contain retail products and services such as sh
 
 
 
-Transaction totals, tax calculations, stock changes, payment processing, and transaction status changes must be handled through explicit application workflows. The design must prevent partial updates from leaving inconsistent business data.
+A transaction basket can contain goods and services. It calculates subtotal, tax, and total using explicitly configured rates by tax category; the Domain provides no tax-rate defaults or rounding policy.
+
+Basket payment status transitions are Open → Paid or Open → Voided, and Paid → Refunded. Only non-empty Open baskets can be paid.
+
+Transaction totals, stock changes, payment processing, and transaction status changes must be handled through explicit application workflows. The design must prevent partial updates from leaving inconsistent business data.
 
 
 
