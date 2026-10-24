@@ -4,20 +4,23 @@ using ApexPost.Application.Services;
 using ApexPost.Infrastructure.Persistence;
 using ApexPost.Web.Authentication;
 using ApexPost.Web.Middleware;
-using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllersWithViews();
+
 builder.Services.AddProblemDetails(options =>
 {
 	options.CustomizeProblemDetails = context =>
 	{
 		context.ProblemDetails.Title = "An unexpected error occurred.";
+
 		SecurityHeadersMiddleware.ApplyHeaders(
 			context.HttpContext.Response);
+
 		if (context.HttpContext.Items.TryGetValue(
 			CorrelationIdMiddleware.HttpContextItemKey,
 			out var correlationId))
@@ -25,12 +28,15 @@ builder.Services.AddProblemDetails(options =>
 			context.HttpContext.Response.Headers[
 				CorrelationIdMiddleware.HeaderName] =
 				correlationId?.ToString();
+
 			context.ProblemDetails.Extensions["correlationId"] =
 				correlationId;
 		}
 	};
 });
-builder.Services.AddAuthentication(options =>
+
+builder.Services
+	.AddAuthentication(options =>
 	{
 		options.DefaultScheme =
 			CookieAuthenticationDefaults.AuthenticationScheme;
@@ -46,45 +52,67 @@ builder.Services.AddAuthentication(options =>
 		options.SlidingExpiration = true;
 		options.EventsType = typeof(StaffCookieAuthenticationEvents);
 	});
+
 builder.Services.AddAuthorization();
+
 var storageDirectory = builder.Configuration["Storage:Directory"];
+
 if (string.IsNullOrWhiteSpace(storageDirectory))
+{
 	throw new InvalidOperationException(
 		"Storage:Directory must be configured for JSON persistence.");
+}
 
 if (!Path.IsPathRooted(storageDirectory))
+{
 	storageDirectory = Path.Combine(
 		builder.Environment.ContentRootPath,
 		storageDirectory);
+}
 
 builder.Services.AddSingleton<IApexPostRepository>(
 	_ => new JsonApexPostRepository(storageDirectory));
-var credentialFile = builder.Configuration["Authentication:CredentialFile"];
+
+var credentialFile =
+	builder.Configuration["Authentication:CredentialFile"];
+
 if (string.IsNullOrWhiteSpace(credentialFile))
+{
 	throw new InvalidOperationException(
 		"Authentication:CredentialFile must be configured.");
+}
+
 if (!Path.IsPathRooted(credentialFile))
+{
 	credentialFile = Path.Combine(
 		builder.Environment.ContentRootPath,
 		credentialFile);
+}
 
 builder.Services.AddSingleton<IStaffCredentialRepository>(
 	_ => new JsonStaffCredentialRepository(credentialFile));
+
 builder.Services.AddScoped<TransactionApplicationService>();
 builder.Services.AddScoped<StaffAuthenticationService>();
 builder.Services.AddScoped<StaffCookieAuthenticationEvents>();
 
 var signInPermitLimit = builder.Configuration.GetValue<int>(
 	"Authentication:SignInRateLimit:PermitLimit", 5);
+
 var signInWindowSeconds = builder.Configuration.GetValue<int>(
 	"Authentication:SignInRateLimit:WindowSeconds", 60);
+
 if (signInPermitLimit <= 0 || signInWindowSeconds <= 0)
+{
 	throw new InvalidOperationException(
 		"Sign-in rate limit and window settings must be positive.");
+}
 
 builder.Services.AddRateLimiter(options =>
 {
-	options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+	options.RejectionStatusCode =
+		StatusCodes.Status429TooManyRequests;
+
 	options.AddPolicy("staff-sign-in", context =>
 		RateLimitPartition.GetFixedWindowLimiter(
 			context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -101,15 +129,18 @@ var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 app.UseMiddleware<CorrelationIdMiddleware>();
+
 app.UseExceptionHandler();
 
 if (!app.Environment.IsDevelopment())
 {
-    // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
-    app.UseHsts();
+	// Add HSTS in non-development environments.
+	app.UseHsts();
 }
 
 app.UseMiddleware<SecurityHeadersMiddleware>();
+
+app.UseMiddleware<MaintenanceModeMiddleware>();
 
 app.UseHttpsRedirection();
 app.UseRouting();
@@ -121,10 +152,9 @@ app.UseAuthorization();
 app.MapStaticAssets();
 
 app.MapControllerRoute(
-    name: "default",
-    pattern: "{controller=Home}/{action=Index}/{id?}")
-    .WithStaticAssets();
-
+	name: "default",
+	pattern: "{controller=Home}/{action=Index}/{id?}")
+	.WithStaticAssets();
 
 app.Run();
 
