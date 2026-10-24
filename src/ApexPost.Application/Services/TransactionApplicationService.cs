@@ -18,6 +18,30 @@ public sealed class TransactionApplicationService
 		_repository = repository;
 	}
 
+	public async Task<IReadOnlyList<TransactionBasketSnapshot>>
+		GetTransactionBasketsAsync(
+			CancellationToken cancellationToken = default)
+	{
+		var snapshot = await _repository.LoadAsync(cancellationToken)
+			.ConfigureAwait(false);
+		return Array.AsReadOnly(snapshot.TransactionBaskets
+			.Select(basket => basket.GetSnapshot())
+			.ToArray());
+	}
+
+	public async Task<TransactionBasketSnapshot> GetTransactionBasketAsync(
+		Guid transactionId,
+		CancellationToken cancellationToken = default)
+	{
+		if (transactionId == Guid.Empty)
+			throw new ArgumentException(
+				"Transaction ID cannot be empty.", nameof(transactionId));
+
+		var snapshot = await _repository.LoadAsync(cancellationToken)
+			.ConfigureAwait(false);
+		return FindBasket(snapshot, transactionId).GetSnapshot();
+	}
+
 	public async Task<Guid> CreateBasketAsync(
 		string currency,
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates,

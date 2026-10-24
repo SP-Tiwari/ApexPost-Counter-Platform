@@ -68,7 +68,7 @@ The intended project references are:
 
 
 
-The Web project is the composition root for dependency injection and application pipeline configuration.
+The Web project is the composition root for dependency injection and application pipeline configuration. The transaction MVC surface currently provides Branch Manager-protected, read-only transaction list/details screens. Until a host replaces it, Web uses a fail-closed authentication handler that authenticates no users; no production sign-in integration is configured. A real scheme must be supplied before the protected screens can be used. Baskets do not persist branch attribution, so these views cannot enforce branch-scoped transaction visibility. Mutating transaction actions remain unimplemented until authenticated staff and branch context can be derived safely.
 
 
 
