@@ -18,6 +18,17 @@ public sealed class TransactionLineItem
 		Money unitPrice,
 		int quantity,
 		TaxCategory taxCategory)
+		: this(description, type, unitPrice, quantity, taxCategory, null)
+	{
+	}
+
+	public TransactionLineItem(
+		string description,
+		TransactionItemType type,
+		Money unitPrice,
+		int quantity,
+		TaxCategory taxCategory,
+		Sku? productSku)
 	{
 		if (string.IsNullOrWhiteSpace(description))
 			throw new ArgumentException(
@@ -40,7 +51,7 @@ public sealed class TransactionLineItem
 		UnitPrice = unitPrice;
 		Quantity = quantity;
 		TaxCategory = taxCategory;
-		ProductSku = null;
+		ProductSku = productSku;
 	}
 
 	public TransactionLineItem(Product product, int quantity)

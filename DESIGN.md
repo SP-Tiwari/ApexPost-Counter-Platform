@@ -90,17 +90,15 @@ The Web project is the composition root for dependency injection and application
 
 \## 5. Persistence and Future Database Migration
 
+The Application layer defines `IApexPostRepository`, which loads and replaces an `ApexPostSnapshot` whose collection membership is copied on construction (the Domain objects themselves remain mutable). The snapshot repository boundary is used because several current Domain types do not define persistence identifiers or per-entity CRUD semantics. `ApexPost.Infrastructure` implements this abstraction; Web registers the implementation in its composition root. Application code depends on the interface and Domain types, not JSON APIs. No Application use-case service currently consumes the repository, so persistence is available through DI but is not yet wired into controller workflows.
 
+The JSON implementation stores one versioned `apexpost.json` document containing branches and counter terminals, staff, products, branch stock, shipping items and rates, money orders, identity-verification results, and transaction baskets. The storage directory is configured by `Storage:Directory`; the checked-in configuration uses the relative `data` directory, resolved against the Web content root. No seed data is created. Reports are derived and are not stored as report snapshots. Low-stock and high-value notification rule results are transient; void/refund notifications are persisted with their basket status and reason.
 
-JSON persistence is the initial storage mechanism.
+Infrastructure uses persistence DTOs and reconstructs Domain objects through their validating constructors and state transitions. It does not deserialize directly into encapsulated entities. The basket reconstitution API validates line items, tax rates, payment state, and matching void/refund notification reason. Identity records persist only the masked identifier, never the original document number. Currency amounts, enum values, and nested data are validated during load.
 
+A missing file represents an empty snapshot. An empty, malformed, unsupported-version, or Domain-invalid file fails explicitly and is not replaced automatically. Save writes a temporary file in the same directory, flushes it asynchronously, then replaces the document. Load, save, and update use asynchronous streams and accept cancellation tokens. If a write fails and temporary-file cleanup also fails, the original operation exception is rethrown and the cleanup exception is attached in its `Data` dictionary. Cancellation tests deterministically cancel after a completed load and before the subsequent write; cancellation at an arbitrary point during stream serialization is not injected because the repository has no file-stream test seam. Replacement-failure coverage verifies temporary-file cleanup where the test environment permits it. `UpdateAsync` holds the same semaphore across load, caller transformation, and replacement, preventing in-process read-modify-write lost updates when callers use that operation. Web registers a singleton repository so operations share that lock. The lock is instance-local; separate repository instances or application processes sharing a directory are not coordinated. Callers must not concurrently mutate the same Domain objects while saving them. Atomic replacement depends on same-volume filesystem behavior. Cancellation before replacement leaves the prior file intact; cancellation after replacement may arrive only after the operation has committed.
 
-
-Application services must use repository interfaces rather than read or write JSON files directly. Infrastructure owns JSON serialization, file access, and concurrency protection.
-
-
-
-When a database is introduced, new repository implementations should be registered through dependency injection. Business rules and application workflows should remain unchanged wherever possible.
+This collection-level repository can be replaced behind `IApexPostRepository` by a database-backed snapshot implementation without changing Domain rules. A future design with per-aggregate database updates may introduce more granular repository interfaces once stable identifiers and use-case boundaries exist. The current model does not associate money orders or identity verifications with branches, nor does it retain transaction business dates; persistence does not invent those links, so report callers still need authoritative context.
 
 
 
@@ -154,7 +152,7 @@ Transaction totals, stock changes, payment processing, and transaction status ch
 
 Report inputs supply branch and business-date associations because transaction baskets and service records do not own that context. The caller must provide authoritative, unique activity records; the Domain cannot validate fabricated branch/date attribution or deduplicate repeated report inputs. Daily sales include baskets that are Paid when the report takes its basket snapshot and classify line totals, including configured tax, as goods or services; mixed currencies for one branch/date are rejected rather than converted. Low stock means quantity less than or equal to the caller-supplied threshold and is evaluated independently for every supplied branch-stock record. Shipping volume counts each supplied shipping-item record once, grouped by exact destination zone and service level. Auditor reports count caller-associated money orders and identity-verification outcomes per branch.
 
-Domain notification rules produce low-stock and high-value money-order notification values from explicit thresholds; the application money-order workflow must invoke the high-value rule when processing an order. They do not deliver or deduplicate notifications. Successful basket void/refund transitions are available only through the authorization rule, require a non-empty reason, and append typed notification records containing that reason before changing state under the shared mutation lock. These in-memory records are not durable across process loss; external dispatch and durable delivery remain outside the Domain.
+Domain notification rules produce low-stock and high-value money-order notification values from explicit thresholds; the application money-order workflow must invoke the high-value rule when processing an order. They do not deliver or deduplicate notifications. Successful basket void/refund transitions are available only through the authorization rule, require a non-empty reason, and append typed notification records containing that reason before changing state under the shared mutation lock. Those records are included in a saved basket snapshot, but are not durable unless the application saves the updated snapshot; external dispatch and delivery guarantees remain outside the Domain.
 
 
 
@@ -212,9 +210,7 @@ The JSON audit implementation should be append-oriented and protected by appropr
 
 I/O operations should use async/await and propagate CancellationToken where appropriate.
 
-
-
-Concurrent access to JSON files must be coordinated to prevent conflicting writes and data loss. Independent dashboard queries may run concurrently when doing so is safe.
+JSON repository reads and writes share a `SemaphoreSlim`; `UpdateAsync` keeps the lock for the full read-modify-write sequence. Concurrent access is coordinated only within the singleton repository instance/process. File content is streamed asynchronously, and replacement is performed only after serialization and flush succeed. Independent dashboard queries may run concurrently when doing so is safe.
 
 
 

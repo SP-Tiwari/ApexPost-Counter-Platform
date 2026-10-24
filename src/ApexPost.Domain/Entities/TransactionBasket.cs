@@ -27,12 +27,34 @@ public sealed class TransactionBasket
 	public IReadOnlyList<TransactionLineItem> LineItems =>
 		GetLineItems();
 
+	public IReadOnlyDictionary<TaxCategory, decimal> TaxRates
+	{
+		get
+		{
+			lock (DomainMutationLock.Gate)
+				return new Dictionary<TaxCategory, decimal>(_taxRates);
+		}
+	}
+
 	public IReadOnlyList<DomainNotification> Notifications
 	{
 		get
 		{
 			lock (DomainMutationLock.Gate)
 				return _notifications.ToArray();
+		}
+	}
+
+	public TransactionBasketSnapshot GetSnapshot()
+	{
+		lock (DomainMutationLock.Gate)
+		{
+			return new TransactionBasketSnapshot(
+				Currency,
+				new Dictionary<TaxCategory, decimal>(_taxRates),
+				_lineItems.ToArray(),
+				_paymentStatus,
+				_notifications.ToArray());
 		}
 	}
 
@@ -93,6 +115,47 @@ public sealed class TransactionBasket
 
 			_taxRates.Add(taxCategory, taxRate);
 		}
+	}
+
+	public static TransactionBasket Reconstitute(
+		string currency,
+		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
+		IEnumerable<TransactionLineItem> lineItems,
+		TransactionPaymentStatus paymentStatus,
+		IEnumerable<DomainNotification> notifications)
+	{
+		ArgumentNullException.ThrowIfNull(lineItems);
+		ArgumentNullException.ThrowIfNull(notifications);
+
+		if (!Enum.IsDefined(paymentStatus))
+			throw new ArgumentOutOfRangeException(nameof(paymentStatus));
+
+		var restoredNotifications = notifications.ToArray();
+		var basket = new TransactionBasket(currency, taxRates);
+		foreach (var lineItem in lineItems)
+			basket.AddLineItem(lineItem);
+
+		switch (paymentStatus)
+		{
+			case TransactionPaymentStatus.Open:
+				EnsureNoNotifications(restoredNotifications);
+				break;
+			case TransactionPaymentStatus.Paid:
+				EnsureNoNotifications(restoredNotifications);
+				basket.Pay();
+				break;
+			case TransactionPaymentStatus.Voided:
+				basket.Void(GetRequiredReason<TransactionVoidedNotification>(
+					restoredNotifications));
+				break;
+			case TransactionPaymentStatus.Refunded:
+				basket.Pay();
+				basket.Refund(GetRequiredReason<TransactionRefundedNotification>(
+					restoredNotifications));
+				break;
+		}
+
+		return basket;
 	}
 
 	public void AddLineItem(TransactionLineItem lineItem)
@@ -197,6 +260,34 @@ public sealed class TransactionBasket
 				lineItem.Subtotal.Amount * _taxRates[lineItem.TaxCategory]);
 
 		return new Money(subtotal + tax, Currency);
+	}
+
+	private static string GetRequiredReason<TNotification>(
+		IReadOnlyList<DomainNotification> notifications)
+		where TNotification : DomainNotification
+	{
+		if (notifications.Count != 1 ||
+			notifications[0] is not TNotification notification)
+		{
+			throw new ArgumentException(
+				$"The restored payment status requires exactly one {typeof(TNotification).Name}.");
+		}
+
+		return notification switch
+		{
+			TransactionVoidedNotification voided => voided.Reason,
+			TransactionRefundedNotification refunded => refunded.Reason,
+			_ => throw new ArgumentException(
+				"Restored transaction notification type is invalid.")
+		};
+	}
+
+	private static void EnsureNoNotifications(
+		IReadOnlyCollection<DomainNotification> notifications)
+	{
+		if (notifications.Count != 0)
+			throw new ArgumentException(
+				"Open and Paid transaction baskets cannot contain void/refund notifications.");
 	}
 
 	private void EnsureOpen()

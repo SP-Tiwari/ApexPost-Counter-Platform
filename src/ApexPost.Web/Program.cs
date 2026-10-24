@@ -1,7 +1,22 @@
+using ApexPost.Application.Persistence;
+using ApexPost.Infrastructure.Persistence;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllersWithViews();
+var storageDirectory = builder.Configuration["Storage:Directory"];
+if (string.IsNullOrWhiteSpace(storageDirectory))
+	throw new InvalidOperationException(
+		"Storage:Directory must be configured for JSON persistence.");
+
+if (!Path.IsPathRooted(storageDirectory))
+	storageDirectory = Path.Combine(
+		builder.Environment.ContentRootPath,
+		storageDirectory);
+
+builder.Services.AddSingleton<IApexPostRepository>(
+	_ => new JsonApexPostRepository(storageDirectory));
 
 var app = builder.Build();
 
@@ -27,3 +42,5 @@ app.MapControllerRoute(
 
 
 app.Run();
+
+public partial class Program { }
