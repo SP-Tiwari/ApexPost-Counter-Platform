@@ -1,5 +1,6 @@
 using ApexPost.Domain.Entities;
 using ApexPost.Domain.Enums;
+using ApexPost.Domain.Notifications;
 using ApexPost.Domain.Rules;
 using ApexPost.Domain.ValueObjects;
 
@@ -15,6 +16,10 @@ public class TransactionVoidRefundRuleTests
 		CreateRule().Void(CreateStaff(StaffRole.BranchManager), basket, "Duplicate entry");
 
 		Assert.Equal(TransactionPaymentStatus.Voided, basket.PaymentStatus);
+		Assert.Equal(
+			"Duplicate entry",
+			Assert.IsType<TransactionVoidedNotification>(
+				Assert.Single(basket.Notifications)).Reason);
 	}
 
 	[Fact]
@@ -26,6 +31,10 @@ public class TransactionVoidRefundRuleTests
 		CreateRule().Refund(CreateStaff(StaffRole.BranchManager), basket, "Customer request");
 
 		Assert.Equal(TransactionPaymentStatus.Refunded, basket.PaymentStatus);
+		Assert.Equal(
+			"Customer request",
+			Assert.IsType<TransactionRefundedNotification>(
+				Assert.Single(basket.Notifications)).Reason);
 	}
 
 	[Theory]
@@ -40,6 +49,7 @@ public class TransactionVoidRefundRuleTests
 			CreateRule().Void(CreateStaff(role), basket, "Valid reason"));
 
 		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
+		Assert.Empty(basket.Notifications);
 	}
 
 	[Theory]
@@ -55,6 +65,7 @@ public class TransactionVoidRefundRuleTests
 			CreateRule().Refund(CreateStaff(role), basket, "Valid reason"));
 
 		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Empty(basket.Notifications);
 	}
 
 	[Fact]
@@ -68,6 +79,7 @@ public class TransactionVoidRefundRuleTests
 			CreateRule().Void(manager, basket, "Valid reason"));
 
 		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
+		Assert.Empty(basket.Notifications);
 	}
 
 	[Theory]
@@ -81,6 +93,7 @@ public class TransactionVoidRefundRuleTests
 			CreateRule().Void(CreateStaff(StaffRole.BranchManager), basket, reason));
 
 		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
+		Assert.Empty(basket.Notifications);
 	}
 
 	[Theory]
@@ -95,6 +108,7 @@ public class TransactionVoidRefundRuleTests
 			CreateRule().Refund(CreateStaff(StaffRole.BranchManager), basket, reason));
 
 		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Empty(basket.Notifications);
 	}
 
 	[Fact]
@@ -107,6 +121,7 @@ public class TransactionVoidRefundRuleTests
 			CreateRule().Void(CreateStaff(StaffRole.BranchManager), basket, "Valid reason"));
 
 		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Empty(basket.Notifications);
 	}
 
 	[Fact]
@@ -118,6 +133,7 @@ public class TransactionVoidRefundRuleTests
 			CreateRule().Refund(CreateStaff(StaffRole.BranchManager), basket, "Valid reason"));
 
 		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
+		Assert.Empty(basket.Notifications);
 	}
 
 	[Fact]
@@ -125,12 +141,80 @@ public class TransactionVoidRefundRuleTests
 	{
 		var basket = CreateBasket();
 		basket.Pay();
-		basket.Refund();
+		CreateRule().Refund(
+			CreateStaff(StaffRole.BranchManager),
+			basket,
+			"Initial refund");
 
 		Assert.Throws<InvalidOperationException>(() =>
 			CreateRule().Refund(CreateStaff(StaffRole.BranchManager), basket, "Valid reason"));
 
 		Assert.Equal(TransactionPaymentStatus.Refunded, basket.PaymentStatus);
+	}
+
+	[Fact]
+	public async Task ConcurrentVoidRequests_ProduceOneTransitionAndOneNotification()
+	{
+		var basket = CreateBasket();
+		var rule = CreateRule();
+		var attempts = Enumerable.Range(0, 12)
+			.Select(index => Task.Run(() =>
+			{
+				try
+				{
+					rule.Void(
+						CreateStaff(StaffRole.BranchManager),
+						basket,
+						$"Reason {index}");
+					return true;
+				}
+				catch (InvalidOperationException)
+				{
+					return false;
+				}
+			}))
+			.ToArray();
+
+		var succeeded = await Task.WhenAll(attempts);
+
+		Assert.Equal(1, succeeded.Count(result => result));
+		Assert.Equal(TransactionPaymentStatus.Voided, basket.PaymentStatus);
+		var notification = Assert.IsType<TransactionVoidedNotification>(
+			Assert.Single(basket.Notifications));
+		Assert.StartsWith("Reason ", notification.Reason);
+	}
+
+	[Fact]
+	public async Task ConcurrentRefundRequests_ProduceOneTransitionAndOneNotification()
+	{
+		var basket = CreateBasket();
+		basket.Pay();
+		var rule = CreateRule();
+		var attempts = Enumerable.Range(0, 12)
+			.Select(index => Task.Run(() =>
+			{
+				try
+				{
+					rule.Refund(
+						CreateStaff(StaffRole.BranchManager),
+						basket,
+						$"Reason {index}");
+					return true;
+				}
+				catch (InvalidOperationException)
+				{
+					return false;
+				}
+			}))
+			.ToArray();
+
+		var succeeded = await Task.WhenAll(attempts);
+
+		Assert.Equal(1, succeeded.Count(result => result));
+		Assert.Equal(TransactionPaymentStatus.Refunded, basket.PaymentStatus);
+		var notification = Assert.IsType<TransactionRefundedNotification>(
+			Assert.Single(basket.Notifications));
+		Assert.StartsWith("Reason ", notification.Reason);
 	}
 
 	[Fact]

@@ -1,5 +1,7 @@
 using ApexPost.Domain.Entities;
 using ApexPost.Domain.Enums;
+using ApexPost.Domain.Notifications;
+using ApexPost.Domain.Rules;
 using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Domain.Tests.Entities;
@@ -21,9 +23,11 @@ public class TransactionBasketPaymentStatusTests
 	{
 		var basket = CreatePopulatedBasket();
 
-		basket.Void();
+		Void(basket);
 
 		Assert.Equal(TransactionPaymentStatus.Voided, basket.PaymentStatus);
+		Assert.IsType<TransactionVoidedNotification>(
+			Assert.Single(basket.Notifications));
 	}
 
 	[Fact]
@@ -32,9 +36,11 @@ public class TransactionBasketPaymentStatusTests
 		var basket = CreatePopulatedBasket();
 		basket.Pay();
 
-		basket.Refund();
+		Refund(basket);
 
 		Assert.Equal(TransactionPaymentStatus.Refunded, basket.PaymentStatus);
+		Assert.IsType<TransactionRefundedNotification>(
+			Assert.Single(basket.Notifications));
 	}
 
 	[Fact]
@@ -50,9 +56,11 @@ public class TransactionBasketPaymentStatusTests
 	public void Void_WhenAlreadyVoided_ThrowsInvalidOperationException()
 	{
 		var basket = CreatePopulatedBasket();
-		basket.Void();
+		Void(basket);
+		var notificationsBeforeRepeat = basket.Notifications;
 
-		Assert.Throws<InvalidOperationException>(() => basket.Void());
+		Assert.Throws<InvalidOperationException>(() => Void(basket, "Repeated void"));
+		Assert.Equal(notificationsBeforeRepeat, basket.Notifications);
 	}
 
 	[Fact]
@@ -61,7 +69,7 @@ public class TransactionBasketPaymentStatusTests
 		var basket = CreatePopulatedBasket();
 		basket.Pay();
 
-		Assert.Throws<InvalidOperationException>(() => basket.Void());
+		Assert.Throws<InvalidOperationException>(() => Void(basket, "Invalid state"));
 	}
 
 	[Fact]
@@ -69,7 +77,8 @@ public class TransactionBasketPaymentStatusTests
 	{
 		var basket = CreatePopulatedBasket();
 
-		Assert.Throws<InvalidOperationException>(() => basket.Refund());
+		Assert.Throws<InvalidOperationException>(() => Refund(basket, "Invalid state"));
+		Assert.Empty(basket.Notifications);
 	}
 
 	[Fact]
@@ -77,16 +86,18 @@ public class TransactionBasketPaymentStatusTests
 	{
 		var basket = CreatePopulatedBasket();
 		basket.Pay();
-		basket.Refund();
+		Refund(basket);
+		var notificationsBeforeRepeat = basket.Notifications;
 
-		Assert.Throws<InvalidOperationException>(() => basket.Refund());
+		Assert.Throws<InvalidOperationException>(() => Refund(basket, "Repeated refund"));
+		Assert.Equal(notificationsBeforeRepeat, basket.Notifications);
 	}
 
 	[Fact]
 	public void Pay_WhenVoided_ThrowsInvalidOperationException()
 	{
 		var basket = CreatePopulatedBasket();
-		basket.Void();
+		Void(basket);
 
 		Assert.Throws<InvalidOperationException>(() => basket.Pay());
 	}
@@ -96,9 +107,9 @@ public class TransactionBasketPaymentStatusTests
 	{
 		var basket = CreatePopulatedBasket();
 		basket.Pay();
-		basket.Refund();
+		Refund(basket);
 
-		Assert.Throws<InvalidOperationException>(() => basket.Void());
+		Assert.Throws<InvalidOperationException>(() => Void(basket, "Invalid state"));
 	}
 
 	private static TransactionBasket CreatePopulatedBasket()
@@ -119,4 +130,18 @@ public class TransactionBasketPaymentStatusTests
 
 		return basket;
 	}
+
+	private static void Void(TransactionBasket basket, string reason = "Test void reason") =>
+		new TransactionVoidRefundRule().Void(CreateBranchManager(), basket, reason);
+
+	private static void Refund(TransactionBasket basket, string reason = "Test refund reason") =>
+		new TransactionVoidRefundRule().Refund(CreateBranchManager(), basket, reason);
+
+	private static Staff CreateBranchManager() =>
+		new(
+			"MANAGER01",
+			"Branch Manager",
+			"manager@example.com",
+			StaffRole.BranchManager,
+			new BranchCode("DEL01"));
 }

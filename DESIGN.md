@@ -150,6 +150,12 @@ Basket payment status transitions are Open → Paid or Open → Voided, and Paid
 
 Transaction totals, stock changes, payment processing, and transaction status changes must be handled through explicit application workflows. The design must prevent partial updates from leaving inconsistent business data.
 
+\## 7.1 Reports and Notifications
+
+Report inputs supply branch and business-date associations because transaction baskets and service records do not own that context. The caller must provide authoritative, unique activity records; the Domain cannot validate fabricated branch/date attribution or deduplicate repeated report inputs. Daily sales include baskets that are Paid when the report takes its basket snapshot and classify line totals, including configured tax, as goods or services; mixed currencies for one branch/date are rejected rather than converted. Low stock means quantity less than or equal to the caller-supplied threshold and is evaluated independently for every supplied branch-stock record. Shipping volume counts each supplied shipping-item record once, grouped by exact destination zone and service level. Auditor reports count caller-associated money orders and identity-verification outcomes per branch.
+
+Domain notification rules produce low-stock and high-value money-order notification values from explicit thresholds; the application money-order workflow must invoke the high-value rule when processing an order. They do not deliver or deduplicate notifications. Successful basket void/refund transitions are available only through the authorization rule, require a non-empty reason, and append typed notification records containing that reason before changing state under the shared mutation lock. These in-memory records are not durable across process loss; external dispatch and durable delivery remain outside the Domain.
+
 
 
 \## 8. Security Design
