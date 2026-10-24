@@ -8,13 +8,13 @@ public sealed class TransactionVoidRefundRule
 	public void Void(Staff staff, TransactionBasket basket, string reason)
 	{
 		ValidateAuthorization(staff, basket, reason);
-		basket.Void();
+		basket.Void(reason);
 	}
 
 	public void Refund(Staff staff, TransactionBasket basket, string reason)
 	{
 		ValidateAuthorization(staff, basket, reason);
-		basket.Refund();
+		basket.Refund(reason);
 	}
 
 	private static void ValidateAuthorization(
