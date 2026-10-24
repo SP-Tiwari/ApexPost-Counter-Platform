@@ -10,7 +10,8 @@ namespace ApexPost.Infrastructure.Persistence;
 
 public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 {
-	private const int CurrentSchemaVersion = 1;
+	private const int PreviousSchemaVersion = 1;
+	private const int CurrentSchemaVersion = 2;
 	private readonly string _filePath;
 	private readonly SemaphoreSlim _fileLock = new(1, 1);
 	private readonly JsonSerializerOptions _serializerOptions = new()
@@ -113,24 +114,34 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 			return ApexPostSnapshot.Empty;
 		}
 
+		PersistedApexPost document;
 		await using (stream)
 		{
-			var document = await JsonSerializer.DeserializeAsync<PersistedApexPost>(
+			var deserialized = await JsonSerializer.DeserializeAsync<PersistedApexPost>(
 				stream,
 				_serializerOptions,
 				cancellationToken).ConfigureAwait(false);
 
-			if (document is null)
+			if (deserialized is null)
 				throw new InvalidDataException(
 					"Persisted ApexPost data cannot be null.");
 
-			if (document.SchemaVersion != CurrentSchemaVersion)
-				throw new InvalidDataException(
-					$"Unsupported ApexPost data schema version '{document.SchemaVersion}'.");
-
-			ValidateDocument(document);
-			return ToSnapshot(document);
+			document = deserialized;
 		}
+
+		if (document.SchemaVersion is not PreviousSchemaVersion and
+			not CurrentSchemaVersion)
+			throw new InvalidDataException(
+				$"Unsupported ApexPost data schema version '{document.SchemaVersion}'.");
+
+		var isLegacySchema = document.SchemaVersion == PreviousSchemaVersion;
+		ValidateDocument(document, isLegacySchema);
+		var snapshot = ToSnapshot(document);
+		if (isLegacySchema)
+			await SaveUnderLockAsync(snapshot, cancellationToken)
+				.ConfigureAwait(false);
+
+		return snapshot;
 	}
 
 	private async Task SaveUnderLockAsync(
@@ -267,6 +278,7 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 		TransactionBasketSnapshot basket) =>
 		new()
 		{
+			Id = basket.Id,
 			Currency = basket.Currency,
 			TaxRates = basket.TaxRates
 				.Select(pair => new PersistedTaxRate
@@ -347,7 +359,9 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 		}
 	}
 
-	private static void ValidateDocument(PersistedApexPost document)
+	private static void ValidateDocument(
+		PersistedApexPost document,
+		bool allowMissingTransactionIds)
 	{
 		if (ContainsNull(document.Branches) ||
 			ContainsNull(document.Staff) ||
@@ -363,6 +377,14 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				"Persisted ApexPost data contains a null collection or record.");
 		}
 
+		var transactionIds = document.TransactionBaskets
+			.Where(basket => basket.Id.HasValue)
+			.Select(basket => basket.Id!.Value)
+			.ToArray();
+		if (transactionIds.Distinct().Count() != transactionIds.Length)
+			throw new InvalidDataException(
+				"Persisted transaction IDs must be unique.");
+
 		if (document.Branches.Any(branch =>
 				ContainsNull(branch.CounterTerminals)) ||
 			document.Products.Any(product => product.UnitPrice is null) ||
@@ -374,6 +396,8 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				ContainsNull(basket.TaxRates) ||
 				ContainsNull(basket.LineItems) ||
 				ContainsNull(basket.Notifications) ||
+				(!allowMissingTransactionIds &&
+					(basket.Id is null || basket.Id == Guid.Empty)) ||
 				basket.LineItems.Any(lineItem => lineItem.UnitPrice is null)))
 		{
 			throw new InvalidDataException(
@@ -451,6 +475,7 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 			});
 
 		return TransactionBasket.Reconstitute(
+			basket.Id ?? Guid.NewGuid(),
 			basket.Currency,
 			taxRates,
 			lineItems,
@@ -565,6 +590,7 @@ internal sealed class PersistedMoney
 
 internal sealed class PersistedTransactionBasket
 {
+	public Guid? Id { get; set; }
 	public required string Currency { get; set; }
 	public required List<PersistedTaxRate> TaxRates { get; set; }
 	public required List<PersistedLineItem> LineItems { get; set; }

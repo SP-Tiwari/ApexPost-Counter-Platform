@@ -13,6 +13,7 @@ public sealed class TransactionBasket
 	private TransactionPaymentStatus _paymentStatus =
 		TransactionPaymentStatus.Open;
 
+	public Guid Id { get; }
 	public string Currency { get; }
 	public TransactionPaymentStatus PaymentStatus
 	{
@@ -50,6 +51,7 @@ public sealed class TransactionBasket
 		lock (DomainMutationLock.Gate)
 		{
 			return new TransactionBasketSnapshot(
+				Id,
 				Currency,
 				new Dictionary<TaxCategory, decimal>(_taxRates),
 				_lineItems.ToArray(),
@@ -98,9 +100,22 @@ public sealed class TransactionBasket
 	public TransactionBasket(
 		string currency,
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates)
+		: this(Guid.NewGuid(), currency, taxRates)
+	{
+	}
+
+	private TransactionBasket(
+		Guid id,
+		string currency,
+		IReadOnlyDictionary<TaxCategory, decimal> taxRates)
 	{
 		ArgumentNullException.ThrowIfNull(taxRates);
 
+		if (id == Guid.Empty)
+			throw new ArgumentException(
+				"Transaction ID cannot be empty.", nameof(id));
+
+		Id = id;
 		Currency = new Money(0m, currency).Currency;
 		_taxRates = new Dictionary<TaxCategory, decimal>();
 
@@ -123,6 +138,21 @@ public sealed class TransactionBasket
 		IEnumerable<TransactionLineItem> lineItems,
 		TransactionPaymentStatus paymentStatus,
 		IEnumerable<DomainNotification> notifications)
+		=> Reconstitute(
+			Guid.NewGuid(),
+			currency,
+			taxRates,
+			lineItems,
+			paymentStatus,
+			notifications);
+
+	public static TransactionBasket Reconstitute(
+		Guid id,
+		string currency,
+		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
+		IEnumerable<TransactionLineItem> lineItems,
+		TransactionPaymentStatus paymentStatus,
+		IEnumerable<DomainNotification> notifications)
 	{
 		ArgumentNullException.ThrowIfNull(lineItems);
 		ArgumentNullException.ThrowIfNull(notifications);
@@ -131,7 +161,7 @@ public sealed class TransactionBasket
 			throw new ArgumentOutOfRangeException(nameof(paymentStatus));
 
 		var restoredNotifications = notifications.ToArray();
-		var basket = new TransactionBasket(currency, taxRates);
+		var basket = new TransactionBasket(id, currency, taxRates);
 		foreach (var lineItem in lineItems)
 			basket.AddLineItem(lineItem);
 
