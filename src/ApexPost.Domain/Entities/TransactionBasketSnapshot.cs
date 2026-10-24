@@ -6,6 +6,7 @@ namespace ApexPost.Domain.Entities;
 
 public sealed class TransactionBasketSnapshot
 {
+	public Guid Id { get; }
 	public string Currency { get; }
 	public IReadOnlyDictionary<TaxCategory, decimal> TaxRates { get; }
 	public IReadOnlyList<TransactionLineItem> LineItems { get; }
@@ -13,12 +14,14 @@ public sealed class TransactionBasketSnapshot
 	public IReadOnlyList<DomainNotification> Notifications { get; }
 
 	internal TransactionBasketSnapshot(
+		Guid id,
 		string currency,
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
 		IEnumerable<TransactionLineItem> lineItems,
 		TransactionPaymentStatus paymentStatus,
 		IEnumerable<DomainNotification> notifications)
 	{
+		Id = id;
 		Currency = currency;
 		TaxRates = new ReadOnlyDictionary<TaxCategory, decimal>(
 			new Dictionary<TaxCategory, decimal>(taxRates));

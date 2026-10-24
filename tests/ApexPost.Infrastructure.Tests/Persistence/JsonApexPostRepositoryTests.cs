@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using ApexPost.Application.Persistence;
 using ApexPost.Domain.Entities;
 using ApexPost.Domain.Enums;
@@ -122,6 +123,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			StringComparison.Ordinal);
 
 		var loadedBasket = loaded.TransactionBaskets[0];
+		Assert.Equal(openBasket.Id, loadedBasket.Id);
 		Assert.Equal(TransactionPaymentStatus.Open, loadedBasket.PaymentStatus);
 		Assert.Equal(
 			TransactionPaymentStatus.Paid,
@@ -151,6 +153,71 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			"Duplicate entry",
 			Assert.IsType<TransactionVoidedNotification>(
 				Assert.Single(loaded.TransactionBaskets[2].Notifications)).Reason);
+	}
+
+	[Fact]
+	public async Task LoadAsync_WhenLoadingVersionOneSnapshot_MigratesBasketIds()
+	{
+		using var repository = CreateRepository();
+		var basket = CreateBasket(CreateProduct());
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [], [], [basket]));
+
+		var document = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		document["schemaVersion"] = 1;
+		foreach (var persistedBasket in document["transactionBaskets"]!.AsArray())
+			persistedBasket!.AsObject().Remove("id");
+		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
+
+		var migrated = await repository.LoadAsync();
+		var migratedBasket = Assert.Single(migrated.TransactionBaskets);
+		Assert.NotEqual(Guid.Empty, migratedBasket.Id);
+
+		var persistedAfterMigration = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		Assert.Equal(2, persistedAfterMigration["schemaVersion"]!.GetValue<int>());
+		Assert.Equal(
+			migratedBasket.Id,
+			persistedAfterMigration["transactionBaskets"]![0]!["id"]!
+				.GetValue<Guid>());
+		Assert.Equal(migratedBasket.Id,
+			Assert.Single((await repository.LoadAsync()).TransactionBaskets).Id);
+	}
+
+	[Fact]
+	public async Task LoadAsync_WhenTransactionIdsAreDuplicated_RejectsSnapshot()
+	{
+		using var repository = CreateRepository();
+		var transactionId = Guid.NewGuid();
+		var taxRates = new Dictionary<TaxCategory, decimal>
+		{
+			[TaxCategory.Standard] = 0m
+		};
+		var baskets = new[]
+		{
+			TransactionBasket.Reconstitute(
+				transactionId,
+				"INR",
+				taxRates,
+				[],
+				TransactionPaymentStatus.Open,
+				[]),
+			TransactionBasket.Reconstitute(
+				transactionId,
+				"INR",
+				taxRates,
+				[],
+				TransactionPaymentStatus.Open,
+				[])
+		};
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [], [], baskets));
+
+		var exception = await Assert.ThrowsAsync<InvalidDataException>(
+			() => repository.LoadAsync());
+
+		Assert.Contains("transaction IDs must be unique", exception.Message);
 	}
 
 	[Fact]

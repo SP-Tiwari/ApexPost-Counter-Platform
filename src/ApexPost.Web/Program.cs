@@ -1,4 +1,5 @@
 using ApexPost.Application.Persistence;
+using ApexPost.Application.Services;
 using ApexPost.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -17,6 +18,7 @@ if (!Path.IsPathRooted(storageDirectory))
 
 builder.Services.AddSingleton<IApexPostRepository>(
 	_ => new JsonApexPostRepository(storageDirectory));
+builder.Services.AddScoped<TransactionApplicationService>();
 
 var app = builder.Build();
 
