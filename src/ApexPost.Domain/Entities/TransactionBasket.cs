@@ -53,6 +53,9 @@ public sealed class TransactionBasket
 			return new TransactionBasketSnapshot(
 				Id,
 				Currency,
+				GetSubtotal(),
+				GetTax(),
+				Total,
 				new Dictionary<TaxCategory, decimal>(_taxRates),
 				_lineItems.ToArray(),
 				_paymentStatus,

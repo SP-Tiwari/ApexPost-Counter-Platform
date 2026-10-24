@@ -1,0 +1,63 @@
+@model ApexPost.Web.Models.TransactionDetailsViewModel
+@{
+    ViewData["Title"] = "Transaction details";
+}
+
+<h1>Transaction details</h1>
+<dl class="row">
+    <dt class="col-sm-3">Transaction ID</dt>
+    <dd class="col-sm-9">@Model.Id</dd>
+    <dt class="col-sm-3">Status</dt>
+    <dd class="col-sm-9">@Model.PaymentStatus</dd>
+    <dt class="col-sm-3">Subtotal</dt>
+    <dd class="col-sm-9">@Model.Subtotal @Model.Currency</dd>
+    <dt class="col-sm-3">Tax</dt>
+    <dd class="col-sm-9">@Model.Tax @Model.Currency</dd>
+    <dt class="col-sm-3">Total</dt>
+    <dd class="col-sm-9">@Model.Total @Model.Currency</dd>
+</dl>
+
+<h2>Line items</h2>
+@if (Model.LineItems.Count == 0)
+{
+    <p>This transaction has no line items.</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th scope="col">Description</th>
+                <th scope="col">Type</th>
+                <th scope="col">Unit price</th>
+                <th scope="col">Quantity</th>
+                <th scope="col">Subtotal</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in Model.LineItems)
+            {
+                <tr>
+                    <td>@item.Description</td>
+                    <td>@item.Type</td>
+                    <td>@item.UnitPrice @item.Currency</td>
+                    <td>@item.Quantity</td>
+                    <td>@item.Subtotal @item.Currency</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@if (Model.Notifications.Count > 0)
+{
+    <h2>Transaction notifications</h2>
+    <ul>
+        @foreach (var notification in Model.Notifications)
+        {
+            <li>@notification.Type: @notification.Reason</li>
+        }
+    </ul>
+}
+
+<a asp-controller="Transactions" asp-action="Index">Back to transactions</a>

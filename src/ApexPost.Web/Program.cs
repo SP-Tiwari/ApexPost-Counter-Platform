@@ -1,11 +1,21 @@
 using ApexPost.Application.Persistence;
 using ApexPost.Application.Services;
 using ApexPost.Infrastructure.Persistence;
+using ApexPost.Web.Authentication;
+using Microsoft.AspNetCore.Authentication;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllersWithViews();
+builder.Services.AddAuthentication(options =>
+	{
+		options.DefaultScheme = UnconfiguredAuthenticationHandler.SchemeName;
+	})
+	.AddScheme<AuthenticationSchemeOptions, UnconfiguredAuthenticationHandler>(
+		UnconfiguredAuthenticationHandler.SchemeName,
+		_ => { });
+builder.Services.AddAuthorization();
 var storageDirectory = builder.Configuration["Storage:Directory"];
 if (string.IsNullOrWhiteSpace(storageDirectory))
 	throw new InvalidOperationException(
@@ -33,6 +43,7 @@ if (!app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseRouting();
 
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapStaticAssets();
