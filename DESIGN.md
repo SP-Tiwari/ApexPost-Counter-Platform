@@ -113,6 +113,7 @@ The implementation must enforce the following rules:
 
 
 \- Inventory stock must never become negative.
+\- Sales validate all branch/product stock requirements before deducting stock and marking the basket Paid; goods lines must reference a Product SKU, while service lines do not consume stock. Employee/branch transaction processing delegates to this sale workflow.
 
 \- Inactive staff cannot perform transactions.
 
@@ -120,11 +121,16 @@ The implementation must enforce the following rules:
 
 \- Closed branches cannot process transactions.
 
-\- High-value money orders require successful identity verification in the same transaction.
+\- Only active Counter Clerks and Branch Managers can process baskets; Counter Clerks are limited to their assigned branch, while Branch Managers have no branch assignment restriction.
+
+\- Money orders contain an amount, sender, recipient, and fee; amount and fee use the same currency, and the amount must be positive.
+\- Money orders above a configured threshold require successful identity verification; the threshold is supplied as configuration, not a domain default.
+\- Identity verification records retain only a masked document identifier showing its last four characters, never the full identifier.
 
 \- Parcel weight must not exceed the maximum for the selected service.
-
-\- Voiding or refunding a transaction requires Branch Manager authorization and a reason.
+\- Shipping rates are configured per destination zone and service level using a base price and per-kilogram charge in the same currency.
+\- Maximum parcel weights are configured per service level; domain code provides no production prices or weight limits.
+\- Voiding or refunding a transaction requires an active Branch Manager and a non-empty reason, and must respect the basket's valid payment-status transition.
 
 \- Full identity document numbers must never be stored.
 
@@ -138,7 +144,11 @@ A single counter transaction can contain retail products and services such as sh
 
 
 
-Transaction totals, tax calculations, stock changes, payment processing, and transaction status changes must be handled through explicit application workflows. The design must prevent partial updates from leaving inconsistent business data.
+A transaction basket can contain goods and services. It calculates subtotal, tax, and total using explicitly configured rates by tax category; the Domain provides no tax-rate defaults or rounding policy.
+
+Basket payment status transitions are Open → Paid or Open → Voided, and Paid → Refunded. Only non-empty Open baskets can be paid.
+
+Transaction totals, stock changes, payment processing, and transaction status changes must be handled through explicit application workflows. The design must prevent partial updates from leaving inconsistent business data.
 
 
 
