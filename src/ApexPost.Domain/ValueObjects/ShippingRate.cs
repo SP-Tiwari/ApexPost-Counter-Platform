@@ -7,14 +7,14 @@ public sealed record ShippingRate
 {
 	public string DestinationZone { get; }
 	public ShippingServiceLevel ServiceLevel { get; }
-	public Weight WeightBandMaximum { get; }
-	public Money Price { get; }
+	public Money BasePrice { get; }
+	public Money PerKilogramCharge { get; }
 
 	public ShippingRate(
 		string destinationZone,
 		ShippingServiceLevel serviceLevel,
-		Weight weightBandMaximum,
-		Money price)
+		Money basePrice,
+		Money perKilogramCharge)
 	{
 		if (string.IsNullOrWhiteSpace(destinationZone))
 			throw new ArgumentException(
@@ -23,12 +23,23 @@ public sealed record ShippingRate
 		if (!Enum.IsDefined(serviceLevel))
 			throw new ArgumentOutOfRangeException(nameof(serviceLevel));
 
-		ArgumentNullException.ThrowIfNull(weightBandMaximum);
-		ArgumentNullException.ThrowIfNull(price);
+		ArgumentNullException.ThrowIfNull(basePrice);
+		ArgumentNullException.ThrowIfNull(perKilogramCharge);
 
 		DestinationZone = destinationZone.Trim();
 		ServiceLevel = serviceLevel;
-		WeightBandMaximum = weightBandMaximum;
-		Price = price;
+
+		if (!string.Equals(
+			basePrice.Currency,
+			perKilogramCharge.Currency,
+			StringComparison.Ordinal))
+		{
+			throw new ArgumentException(
+				"Base price and per-kilogram charge must use the same currency.",
+				nameof(perKilogramCharge));
+		}
+
+		BasePrice = basePrice;
+		PerKilogramCharge = perKilogramCharge;
 	}
 }

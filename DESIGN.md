@@ -123,7 +123,8 @@ The implementation must enforce the following rules:
 \- High-value money orders require successful identity verification in the same transaction.
 
 \- Parcel weight must not exceed the maximum for the selected service.
-
+\- Shipping rates are configured per destination zone and service level using a base price and per-kilogram charge in the same currency.
+\- Maximum parcel weights are configured per service level; domain code provides no production prices or weight limits.
 \- Voiding or refunding a transaction requires Branch Manager authorization and a reason.
 
 \- Full identity document numbers must never be stored.
