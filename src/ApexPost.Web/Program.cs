@@ -11,6 +11,25 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllersWithViews();
+builder.Services.AddProblemDetails(options =>
+{
+	options.CustomizeProblemDetails = context =>
+	{
+		context.ProblemDetails.Title = "An unexpected error occurred.";
+		SecurityHeadersMiddleware.ApplyHeaders(
+			context.HttpContext.Response);
+		if (context.HttpContext.Items.TryGetValue(
+			CorrelationIdMiddleware.HttpContextItemKey,
+			out var correlationId))
+		{
+			context.HttpContext.Response.Headers[
+				CorrelationIdMiddleware.HeaderName] =
+				correlationId?.ToString();
+			context.ProblemDetails.Extensions["correlationId"] =
+				correlationId;
+		}
+	};
+});
 builder.Services.AddAuthentication(options =>
 	{
 		options.DefaultScheme =
@@ -82,10 +101,10 @@ var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseExceptionHandler();
 
 if (!app.Environment.IsDevelopment())
 {
-    app.UseExceptionHandler("/Home/Error");
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
 }
