@@ -1,8 +1,10 @@
 using ApexPost.Application.Persistence;
+using ApexPost.Application.Auditing;
 using ApexPost.Application.Security;
 using ApexPost.Application.Services;
 using ApexPost.Infrastructure.Persistence;
 using ApexPost.Web.Authentication;
+using ApexPost.Web.Filters;
 using ApexPost.Web.Middleware;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using System.Threading.RateLimiting;
@@ -10,7 +12,8 @@ using System.Threading.RateLimiting;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-builder.Services.AddControllersWithViews();
+builder.Services.AddControllersWithViews(options =>
+	options.Filters.AddService<AuditActionFilter>());
 
 builder.Services.AddProblemDetails(options =>
 {
@@ -95,6 +98,23 @@ builder.Services.AddSingleton<IStaffCredentialRepository>(
 builder.Services.AddScoped<TransactionApplicationService>();
 builder.Services.AddScoped<StaffAuthenticationService>();
 builder.Services.AddScoped<StaffCookieAuthenticationEvents>();
+builder.Services.AddScoped<AuditActionFilter>();
+
+var auditFile = builder.Configuration["Audit:FilePath"];
+
+if (string.IsNullOrWhiteSpace(auditFile))
+{
+	auditFile = Path.Combine(storageDirectory, "audit-events.jsonl");
+}
+else if (!Path.IsPathRooted(auditFile))
+{
+	auditFile = Path.Combine(
+		builder.Environment.ContentRootPath,
+		auditFile);
+}
+
+builder.Services.AddSingleton<IAuditStore>(
+	_ => new JsonAuditStore(auditFile));
 
 var signInPermitLimit = builder.Configuration.GetValue<int>(
 	"Authentication:SignInRateLimit:PermitLimit", 5);
