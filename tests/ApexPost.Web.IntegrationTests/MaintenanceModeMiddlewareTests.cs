@@ -60,6 +60,45 @@ public sealed class MaintenanceModeMiddlewareTests : IAsyncLifetime
 		Assert.StartsWith(
 			"application/problem+json",
 			response.Content.Headers.ContentType?.ToString());
+		Assert.Equal("300", Assert.Single(response.Headers.GetValues("Retry-After")));
+	}
+
+	[Fact]
+	public async Task MaintenanceEnabled_HealthBypassesMaintenanceWithSafeResponseAndHeaders()
+	{
+		const string correlationId = "maintenance-health-correlation";
+		using var client = _enabledFactory.CreateClient();
+		client.DefaultRequestHeaders.Add("X-Correlation-ID", correlationId);
+
+		var response = await client.GetAsync("/health");
+		var body = await response.Content.ReadAsStringAsync();
+		using var health = JsonDocument.Parse(body);
+
+		Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+		Assert.Equal(
+			"Healthy",
+			health.RootElement.GetProperty("status").GetString());
+		Assert.Equal(
+			"status",
+			Assert.Single(health.RootElement.EnumerateObject()).Name);
+		Assert.DoesNotContain(MaintenanceMessage, body, StringComparison.Ordinal);
+		Assert.DoesNotContain(_rootDirectory, body, StringComparison.Ordinal);
+		Assert.False(response.Headers.Contains("Retry-After"));
+		Assert.Equal(
+			correlationId,
+			Assert.Single(response.Headers.GetValues("X-Correlation-ID")));
+		Assert.Equal(
+			"nosniff",
+			Assert.Single(response.Headers.GetValues("X-Content-Type-Options")));
+		Assert.Equal(
+			"DENY",
+			Assert.Single(response.Headers.GetValues("X-Frame-Options")));
+		Assert.Equal(
+			"no-referrer",
+			Assert.Single(response.Headers.GetValues("Referrer-Policy")));
+		Assert.Equal(
+			"default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+			Assert.Single(response.Headers.GetValues("Content-Security-Policy")));
 	}
 
 	[Fact]

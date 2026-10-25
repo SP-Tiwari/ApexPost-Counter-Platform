@@ -11,6 +11,15 @@ public sealed class MaintenanceModeMiddleware(
 {
 	public async Task InvokeAsync(HttpContext context)
 	{
+		if (string.Equals(
+			context.Request.Path.Value,
+			"/health",
+			StringComparison.OrdinalIgnoreCase))
+		{
+			await next(context);
+			return;
+		}
+
 		var enabled = configuration.GetValue<bool>("Maintenance:Enabled");
 
 		if (!enabled)
