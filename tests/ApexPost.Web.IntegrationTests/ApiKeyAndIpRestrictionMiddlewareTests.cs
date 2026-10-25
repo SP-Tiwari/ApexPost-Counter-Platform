@@ -84,7 +84,7 @@ public sealed class ApiKeyAndIpRestrictionMiddlewareTests : IAsyncLifetime
 	}
 
 	[Fact]
-	public async Task ProtectedEndpoint_WithoutConfiguredKey_FailsClosed()
+	public async Task ProtectedEndpoint_WithoutConfiguredKey_ReturnsInternalServerError()
 	{
 		await using var unconfiguredFactory = CreateFactory(
 			"missing-key",
@@ -95,7 +95,25 @@ public sealed class ApiKeyAndIpRestrictionMiddlewareTests : IAsyncLifetime
 
 		var response = await client.GetAsync(ProtectedPath);
 
-		Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+		Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+	}
+
+	[Theory]
+	[InlineData("")]
+	[InlineData("   ")]
+	public async Task ProtectedEndpoint_WithBlankConfiguredKey_ReturnsInternalServerError(
+		string configuredKey)
+	{
+		await using var unconfiguredFactory = CreateFactory(
+			"blank-key",
+			apiKey: configuredKey,
+			allowedIpAddresses: []);
+		using var client = unconfiguredFactory.CreateClient();
+		client.DefaultRequestHeaders.Add("X-API-Key", TestApiKey);
+
+		var response = await client.GetAsync(ProtectedPath);
+
+		Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 	}
 
 	[Fact]

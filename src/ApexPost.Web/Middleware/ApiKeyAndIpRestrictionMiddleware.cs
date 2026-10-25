@@ -38,6 +38,13 @@ public sealed class ApiKeyAndIpRestrictionMiddleware
 			return;
 		}
 
+		if (_expectedApiKeyHash is null)
+		{
+			context.Response.StatusCode =
+				StatusCodes.Status500InternalServerError;
+			return;
+		}
+
 		if (_allowedIpAddresses.Count > 0 &&
 			(context.Connection.RemoteIpAddress is not { } remoteAddress ||
 				!_allowedIpAddresses.Contains(NormalizeAddress(remoteAddress))))
@@ -46,8 +53,7 @@ public sealed class ApiKeyAndIpRestrictionMiddleware
 			return;
 		}
 
-		if (_expectedApiKeyHash is null ||
-			!HasValidApiKey(context.Request, _expectedApiKeyHash))
+		if (!HasValidApiKey(context.Request, _expectedApiKeyHash))
 		{
 			context.Response.StatusCode = StatusCodes.Status401Unauthorized;
 			return;
