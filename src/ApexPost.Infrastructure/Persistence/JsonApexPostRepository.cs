@@ -10,8 +10,9 @@ namespace ApexPost.Infrastructure.Persistence;
 
 public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 {
-	private const int PreviousSchemaVersion = 1;
-	private const int CurrentSchemaVersion = 2;
+	private const int LegacySchemaVersion = 1;
+	private const int PreviousSchemaVersion = 2;
+	private const int CurrentSchemaVersion = 3;
 	private readonly string _filePath;
 	private readonly SemaphoreSlim _fileLock = new(1, 1);
 	private readonly JsonSerializerOptions _serializerOptions = new()
@@ -129,15 +130,15 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 			document = deserialized;
 		}
 
-		if (document.SchemaVersion is not PreviousSchemaVersion and
-			not CurrentSchemaVersion)
+		if (document.SchemaVersion is not LegacySchemaVersion and
+			not PreviousSchemaVersion and not CurrentSchemaVersion)
 			throw new InvalidDataException(
 				$"Unsupported ApexPost data schema version '{document.SchemaVersion}'.");
 
-		var isLegacySchema = document.SchemaVersion == PreviousSchemaVersion;
+		var isLegacySchema = document.SchemaVersion == LegacySchemaVersion;
 		ValidateDocument(document, isLegacySchema);
 		var snapshot = ToSnapshot(document);
-		if (isLegacySchema)
+		if (document.SchemaVersion != CurrentSchemaVersion)
 			await SaveUnderLockAsync(snapshot, cancellationToken)
 				.ConfigureAwait(false);
 
@@ -255,15 +256,14 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				Amount = ToMoney(order.Amount),
 				Sender = order.Sender,
 				Recipient = order.Recipient,
-				Fee = ToMoney(order.Fee)
+				Fee = ToMoney(order.Fee),
+				IdentityVerification = order.IdentityVerification is null
+					? null
+					: ToPersistedIdentityVerification(
+						order.IdentityVerification)
 			}).ToList(),
 			IdentityVerifications = snapshot.IdentityVerifications
-				.Select(verification => new PersistedIdentityVerification
-				{
-					DocumentType = verification.DocumentType,
-					MaskedDocumentIdentifier = verification.MaskedDocumentIdentifier,
-					IsSuccessful = verification.IsSuccessful
-				})
+				.Select(ToPersistedIdentityVerification)
 				.ToList(),
 			TransactionBaskets = snapshot.TransactionBaskets
 				.Select(ToPersistedBasket)
@@ -342,14 +342,15 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 					ToMoney(order.Amount),
 					order.Sender,
 					order.Recipient,
-					ToMoney(order.Fee))),
+					ToMoney(order.Fee),
+					order.IdentityVerification is null
+						? null
+						: ToIdentityVerification(order.IdentityVerification))),
 				document.IdentityVerifications.Select(verification =>
-					IdentityVerification.FromMaskedIdentifier(
-						verification.DocumentType,
-						verification.MaskedDocumentIdentifier,
-						verification.IsSuccessful)),
+					ToIdentityVerification(verification)),
 				document.TransactionBaskets.Select(ToBasket));
 		}
+
 		catch (Exception exception) when (
 			exception is ArgumentException or InvalidOperationException or
 			OverflowException or KeyNotFoundException)
@@ -358,6 +359,22 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				"Persisted ApexPost data violates Domain invariants.", exception);
 		}
 	}
+
+	private static PersistedIdentityVerification
+		ToPersistedIdentityVerification(IdentityVerification verification) =>
+		new()
+		{
+			DocumentType = verification.DocumentType,
+			MaskedDocumentIdentifier = verification.MaskedDocumentIdentifier,
+			IsSuccessful = verification.IsSuccessful
+		};
+
+	private static IdentityVerification ToIdentityVerification(
+		PersistedIdentityVerification verification) =>
+		IdentityVerification.FromMaskedIdentifier(
+			verification.DocumentType,
+			verification.MaskedDocumentIdentifier,
+			verification.IsSuccessful);
 
 	private static void ValidateDocument(
 		PersistedApexPost document,
@@ -573,6 +590,7 @@ internal sealed class PersistedMoneyOrder
 	public required string Sender { get; set; }
 	public required string Recipient { get; set; }
 	public required PersistedMoney Fee { get; set; }
+	public PersistedIdentityVerification? IdentityVerification { get; set; }
 }
 
 internal sealed class PersistedIdentityVerification

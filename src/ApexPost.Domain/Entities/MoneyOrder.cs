@@ -8,12 +8,14 @@ public sealed class MoneyOrder
 	public string Sender { get; }
 	public string Recipient { get; }
 	public Money Fee { get; }
+	public IdentityVerification? IdentityVerification { get; }
 
 	public MoneyOrder(
 		Money amount,
 		string sender,
 		string recipient,
-		Money fee)
+		Money fee,
+		IdentityVerification? identityVerification = null)
 	{
 		ArgumentNullException.ThrowIfNull(amount);
 		ArgumentNullException.ThrowIfNull(fee);
@@ -39,5 +41,6 @@ public sealed class MoneyOrder
 		Sender = sender.Trim();
 		Recipient = recipient.Trim();
 		Fee = fee;
+		IdentityVerification = identityVerification;
 	}
 }

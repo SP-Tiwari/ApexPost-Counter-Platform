@@ -1,7 +1,9 @@
+using System.Globalization;
 using ApexPost.Application.Persistence;
 using ApexPost.Application.Auditing;
 using ApexPost.Application.Security;
 using ApexPost.Application.Services;
+using ApexPost.Domain.ValueObjects;
 using ApexPost.Infrastructure.Persistence;
 using ApexPost.Web.Authentication;
 using ApexPost.Web.Filters;
@@ -99,6 +101,36 @@ builder.Services.AddScoped<TransactionApplicationService>();
 builder.Services.AddScoped<StaffAuthenticationService>();
 builder.Services.AddScoped<StaffCookieAuthenticationEvents>();
 builder.Services.AddScoped<AuditActionFilter>();
+
+var moneyOrderThresholdAmount =
+	builder.Configuration["MoneyOrders:HighValueThreshold:Amount"];
+var moneyOrderThresholdCurrency =
+	builder.Configuration["MoneyOrders:HighValueThreshold:Currency"];
+Money? moneyOrderHighValueThreshold = null;
+
+if (!string.IsNullOrWhiteSpace(moneyOrderThresholdAmount) ||
+	!string.IsNullOrWhiteSpace(moneyOrderThresholdCurrency))
+{
+	if (string.IsNullOrWhiteSpace(moneyOrderThresholdAmount) ||
+		string.IsNullOrWhiteSpace(moneyOrderThresholdCurrency) ||
+		!decimal.TryParse(
+			moneyOrderThresholdAmount,
+			NumberStyles.Number,
+			CultureInfo.InvariantCulture,
+			out var thresholdAmount))
+	{
+		throw new InvalidOperationException(
+			"Configure both MoneyOrders:HighValueThreshold:Amount and Currency with valid values.");
+	}
+
+	moneyOrderHighValueThreshold = new Money(
+		thresholdAmount, moneyOrderThresholdCurrency);
+}
+
+builder.Services.AddScoped<MoneyOrderApplicationService>(services =>
+	new MoneyOrderApplicationService(
+		services.GetRequiredService<IApexPostRepository>(),
+		moneyOrderHighValueThreshold));
 
 var auditFile = builder.Configuration["Audit:FilePath"];
 

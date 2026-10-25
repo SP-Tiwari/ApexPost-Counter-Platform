@@ -100,6 +100,12 @@ The application will include secure cookie authentication, role-based and branch
 
 Secrets must not be committed to source control. Passwords, API keys, complete identity document numbers, and payment-sensitive information must not appear in logs.
 
+### Money orders and identity checks
+
+Branch Managers can process money orders through the **Money orders** page. Configure both `MoneyOrders:HighValueThreshold:Amount` and `MoneyOrders:HighValueThreshold:Currency` before enabling the workflow (for example, with environment variables `MoneyOrders__HighValueThreshold__Amount` and `MoneyOrders__HighValueThreshold__Currency`). There is intentionally no default threshold or example business amount. When settings are absent, money-order pages fail closed with HTTP 503; other MVC functionality remains available.
+
+For high-value orders, the signed-in manager must attest that they checked the original identity document in person and record the result. Failed checks and high-value orders without a successful check are rejected. Only the document type and masked identifier are persisted; the full identifier is not retained or logged. This workflow represents staff in-person verification, not an external electronic identity-verification provider.
+
 
 
 \## 7. Testing
@@ -136,8 +142,4 @@ dotnet test ApexPost.slnx
 
 
 
-The initial solution and eight projects have been created. The solution currently builds, and the generated template tests pass.
-
-
-
-Business features, security controls, meaningful tests, seed data, and final documentation remain to be implemented and verified.
+The solution includes layered Domain, Application, Infrastructure, and MVC workflows for transactions, money orders, staff authentication, JSON persistence, and request security controls. The README and DESIGN.md document configuration and known limitations. The repository does not seed production data or staff credentials.

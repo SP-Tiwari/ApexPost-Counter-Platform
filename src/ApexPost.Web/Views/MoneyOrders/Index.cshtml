@@ -1,0 +1,58 @@
+@model IReadOnlyList<ApexPost.Web.Models.MoneyOrderListItemViewModel>
+@{
+    ViewData["Title"] = "Money orders";
+}
+
+<h1>Money orders</h1>
+
+@if (TempData["MoneyOrderStatus"] is string statusMessage)
+{
+    <div class="alert alert-success" role="status">@statusMessage</div>
+}
+
+<p>
+    <a class="btn btn-primary" asp-controller="MoneyOrders" asp-action="Create">
+        Process money order
+    </a>
+</p>
+
+@if (Model.Count == 0)
+{
+    <p>No money orders have been processed.</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th scope="col">Amount</th>
+                <th scope="col">Sender</th>
+                <th scope="col">Recipient</th>
+                <th scope="col">Fee</th>
+                <th scope="col">Identity check</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var order in Model)
+            {
+                <tr>
+                    <td>@order.Amount @order.Currency</td>
+                    <td>@order.Sender</td>
+                    <td>@order.Recipient</td>
+                    <td>@order.Fee @order.Currency</td>
+                    <td>
+                        @if (order.IdentityCheckPassed is bool passed)
+                        {
+                            <span>@(passed ? "Passed" : "Failed")</span>
+                            <span>@order.DocumentType @order.MaskedDocumentIdentifier</span>
+                        }
+                        else
+                        {
+                            <span>Not required</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
