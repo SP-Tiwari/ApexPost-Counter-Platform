@@ -20,7 +20,7 @@ public sealed record ShippingBasketRequest(
 
 public sealed record MixedBasketCatalog(
 	IReadOnlyList<Product> Products,
-	IReadOnlyList<Branch> Branches,
+	Branch Branch,
 	IReadOnlyList<ShippingRate> ShippingRates);
 
 public sealed class MixedBasketApplicationService
@@ -75,16 +75,22 @@ public sealed class MixedBasketApplicationService
 		_taxRates.Count > 0;
 
 	public async Task<MixedBasketCatalog> GetCatalogAsync(
+		string staffId,
 		CancellationToken cancellationToken = default)
 	{
 		var snapshot = await _repository.LoadAsync(cancellationToken)
 			.ConfigureAwait(false);
+		var staff = FindActiveBranchManager(snapshot, staffId);
+		var branch = FindBranch(snapshot, staff.HomeBranchCode);
+		if (!branch.IsActive)
+			throw new InvalidOperationException(
+				"Transactions cannot be processed at an inactive branch.");
+
 		return new MixedBasketCatalog(
 			Array.AsReadOnly(snapshot.Products
 				.Where(product => _taxRates.ContainsKey(product.TaxCategory))
 				.ToArray()),
-			Array.AsReadOnly(snapshot.Branches
-				.Where(branch => branch.IsActive).ToArray()),
+			branch,
 			Array.AsReadOnly(snapshot.ShippingRates
 				.Where(_ => _shippingTaxCategory is not null &&
 					_taxRates.ContainsKey(_shippingTaxCategory.Value))
@@ -94,7 +100,6 @@ public sealed class MixedBasketApplicationService
 	public async Task<Guid> CreateAndProcessAsync(
 		Guid transactionId,
 		string staffId,
-		BranchCode branchCode,
 		IReadOnlyList<GoodsBasketRequest> goods,
 		IReadOnlyList<ShippingBasketRequest> shipments,
 		CancellationToken cancellationToken = default)
@@ -105,7 +110,6 @@ public sealed class MixedBasketApplicationService
 		if (string.IsNullOrWhiteSpace(staffId))
 			throw new UnauthorizedAccessException(
 				"Authenticated staff are required to process a basket.");
-		ArgumentNullException.ThrowIfNull(branchCode);
 		ArgumentNullException.ThrowIfNull(goods);
 		ArgumentNullException.ThrowIfNull(shipments);
 		if (goods.Count == 0 && shipments.Count == 0)
@@ -142,11 +146,13 @@ public sealed class MixedBasketApplicationService
 					"This transaction submission has already been processed.");
 			}
 
+			var staff = FindActiveBranchManager(snapshot, staffId);
+			var branch = FindBranch(snapshot, staff.HomeBranchCode);
 			var basket = new TransactionBasket(
 				transactionId,
 				ResolveCurrency(snapshot, goods, shipments),
 				_taxRates,
-				branchCode);
+				staff.HomeBranchCode);
 
 			foreach (var goodsRequest in goods)
 			{
@@ -196,18 +202,6 @@ public sealed class MixedBasketApplicationService
 					shippingItem: shippingItem));
 				shippingItems.Add(shippingItem);
 			}
-
-			var staff = snapshot.Staff.SingleOrDefault(
-				person => string.Equals(
-					person.Id, staffId, StringComparison.Ordinal));
-			var branch = snapshot.Branches.SingleOrDefault(
-				candidate => candidate.Code == branchCode);
-			if (staff is null)
-				throw new UnauthorizedAccessException(
-					"Authenticated staff are required to process a basket.");
-			if (branch is null)
-				throw new KeyNotFoundException(
-					$"Branch '{branchCode}' was not found.");
 
 			_processingRule.Process(
 				staff, branch, basket, snapshot.BranchStocks);
@@ -282,6 +276,43 @@ public sealed class MixedBasketApplicationService
 				$"Product '{sku}' was not found."),
 			_ => throw new InvalidOperationException(
 				$"Multiple products match SKU '{sku}'.")
+		};
+	}
+
+	private static Staff FindActiveBranchManager(
+		ApexPostSnapshot snapshot,
+		string staffId)
+	{
+		if (string.IsNullOrWhiteSpace(staffId))
+			throw new UnauthorizedAccessException(
+				"Authenticated staff are required to process transactions.");
+		var matches = snapshot.Staff.Where(person =>
+			string.Equals(person.Id, staffId, StringComparison.Ordinal))
+			.Take(2).ToArray();
+		if (matches.Length != 1 ||
+			!matches[0].IsActive ||
+			matches[0].Role != StaffRole.BranchManager)
+		{
+			throw new UnauthorizedAccessException(
+				"An active Branch Manager is required to process transactions.");
+		}
+
+		return matches[0];
+	}
+
+	private static Branch FindBranch(
+		ApexPostSnapshot snapshot,
+		BranchCode branchCode)
+	{
+		var matches = snapshot.Branches.Where(branch =>
+			branch.Code == branchCode).Take(2).ToArray();
+		return matches.Length switch
+		{
+			1 => matches[0],
+			0 => throw new KeyNotFoundException(
+				$"Branch '{branchCode}' was not found."),
+			_ => throw new InvalidOperationException(
+				$"Multiple branches match '{branchCode}'.")
 		};
 	}
 

@@ -119,7 +119,8 @@ public class TransactionBasketPaymentStatusTests
 			new Dictionary<TaxCategory, decimal>
 			{
 				[TaxCategory.Standard] = 0.1m
-			});
+			},
+			new BranchCode("DEL01"));
 
 		basket.AddLineItem(new TransactionLineItem(
 			"Sample item",

@@ -28,11 +28,10 @@ public sealed class TransactionProcessingRule
 			throw new InvalidOperationException(
 				$"Staff role '{staff.Role}' is not authorized to process transactions.");
 
-		if (staff.Role == StaffRole.CounterClerk &&
-			staff.HomeBranchCode != branch.Code)
+		if (staff.HomeBranchCode != branch.Code)
 		{
 			throw new InvalidOperationException(
-				"Counter Clerks can process transactions only at their assigned branch.");
+				"Staff can process transactions only at their assigned branch.");
 		}
 
 		new SaleProcessingService().ProcessSale(

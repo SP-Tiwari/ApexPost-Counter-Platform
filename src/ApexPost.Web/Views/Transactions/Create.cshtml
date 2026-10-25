@@ -7,10 +7,10 @@
 
 <div asp-validation-summary="All" class="text-danger" role="alert"></div>
 
-@if (Model.Branches.Count == 0)
+@if (Model.Branch is null)
 {
     <p class="alert alert-warning" role="status">
-        No active branches are available for transaction processing.
+        Your assigned branch is unavailable for transaction processing.
     </p>
 }
 @if (Model.Products.Count == 0 && Model.ShippingRates.Count == 0)
@@ -20,7 +20,7 @@
         Configure applicable transaction tax rates, inventory, and shipping rates first.
     </p>
 }
-@if (!Model.CanSubmit && Model.Branches.Count > 0 &&
+@if (!Model.CanSubmit && Model.Branch is not null &&
      (Model.Products.Count > 0 || Model.ShippingRates.Count > 0))
 {
     <p class="alert alert-warning" role="status">
@@ -31,17 +31,10 @@
 <form asp-controller="Transactions" asp-action="Create" method="post">
     <input asp-for="TransactionId" type="hidden" />
 
-    <div class="mb-3">
-        <label asp-for="BranchCode" class="form-label">Processing branch</label>
-        <select asp-for="BranchCode" class="form-select">
-            <option value="">Select a branch</option>
-            @foreach (var branch in Model.Branches)
-            {
-                <option value="@branch.Code.Value">@branch.Name (@branch.Code.Value)</option>
-            }
-        </select>
-        <span asp-validation-for="BranchCode" class="text-danger"></span>
-    </div>
+    @if (Model.Branch is not null)
+    {
+        <p>Processing branch: @Model.Branch.Name (@Model.Branch.Code.Value)</p>
+    }
 
     <fieldset class="mb-4">
         <legend>Goods (optional)</legend>

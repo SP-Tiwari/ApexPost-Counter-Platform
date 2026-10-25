@@ -615,7 +615,8 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			new Dictionary<TaxCategory, decimal>
 			{
 				[TaxCategory.Standard] = 0.1m
-			});
+			},
+			new BranchCode("DEL01"));
 		basket.AddLineItem(new TransactionLineItem(product, 2));
 		return basket;
 	}

@@ -124,6 +124,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	[Fact]
 	public async Task SignOut_RequiresAntiforgeryTokenAndClearsCookie()
 	{
+		await SeedManagerAndBranchAsync();
 		var client = _factory.CreateClient(
 			new WebApplicationFactoryClientOptions
 			{
@@ -186,10 +187,14 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 					TaxCategory.Standard)
 			],
 			TransactionPaymentStatus.Paid,
-			[]);
+			[],
+			new BranchCode("BR01"));
+		var branch = CreateBranch("BR01");
+		var manager = CreateStaff(
+			"manager-1", StaffRole.BranchManager, "BR01");
 		var repository = _factory.Services.GetRequiredService<IApexPostRepository>();
 		await repository.SaveAsync(new ApexPostSnapshot(
-			[], [], [], [], [], [], [], [], [basket]));
+			[branch], [manager], [], [], [], [], [], [], [basket]));
 
 		var client = _factory.CreateClient();
 		client.DefaultRequestHeaders.Add("X-Test-Role", "BranchManager");
@@ -212,6 +217,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	[Fact]
 	public async Task Details_WhenTransactionDoesNotExist_ReturnsNotFound()
 	{
+		await SeedManagerAndBranchAsync();
 		var client = _factory.CreateClient();
 		client.DefaultRequestHeaders.Add("X-Test-Role", "BranchManager");
 
@@ -243,6 +249,100 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			(await client.PostAsync(
 				"/Transactions/Create",
 				new FormUrlEncodedContent([]))).StatusCode);
+	}
+
+	[Fact]
+	public async Task TransactionListAndDetails_AreScopedToAuthoritativeStaffBranch()
+	{
+		var (localId, foreignOpenId, foreignPaidId, legacyId) =
+			await SeedTransactionsForTwoBranchesAsync();
+		using var client = CreateManagerClient();
+
+		var listResponse = await client.GetAsync("/Transactions");
+		Assert.Equal(System.Net.HttpStatusCode.OK, listResponse.StatusCode);
+		var listContent = await listResponse.Content.ReadAsStringAsync();
+		Assert.Contains(localId.ToString(), listContent);
+		Assert.DoesNotContain(foreignOpenId.ToString(), listContent);
+		Assert.DoesNotContain(foreignPaidId.ToString(), listContent);
+		Assert.DoesNotContain(legacyId.ToString(), listContent);
+
+		foreach (var inaccessibleId in new[]
+			{ foreignOpenId, foreignPaidId, legacyId, Guid.NewGuid() })
+		{
+			var response = await client.GetAsync(
+				$"/Transactions/{inaccessibleId}");
+			Assert.Equal(
+				System.Net.HttpStatusCode.NotFound, response.StatusCode);
+			Assert.DoesNotContain(
+				"Foreign branch transaction",
+				await response.Content.ReadAsStringAsync(),
+				StringComparison.Ordinal);
+		}
+
+		var localDetails = await client.GetAsync($"/Transactions/{localId}");
+		Assert.Equal(System.Net.HttpStatusCode.OK, localDetails.StatusCode);
+	}
+
+	[Theory]
+	[InlineData("void", TransactionPaymentStatus.Open)]
+	[InlineData("refund", TransactionPaymentStatus.Paid)]
+	public async Task StatusChange_CannotMutateAnotherBranchesTransaction(
+		string action,
+		TransactionPaymentStatus status)
+	{
+		var (localId, foreignOpenId, foreignPaidId, _) =
+			await SeedTransactionsForTwoBranchesAsync();
+		var foreignId = action == "void" ? foreignOpenId : foreignPaidId;
+		using var client = CreateManagerClient();
+		var token = await GetAntiforgeryTokenAsync(client, localId);
+
+		var response = await client.PostAsync(
+			$"/Transactions/{foreignId}/{action}",
+			CreateActionForm("Cross-branch attempt", token));
+
+		Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+		Assert.Equal(
+			status,
+			Assert.Single(
+				(await GetRepositoryAsync()).TransactionBaskets,
+				basket => basket.Id == foreignId).PaymentStatus);
+	}
+
+	[Fact]
+	public async Task TransactionAccess_RejectsInactivePersistedStaff()
+	{
+		var manager = CreateStaff(
+			"manager-1", StaffRole.BranchManager, "BR01");
+		manager.Deactivate();
+		await _factory.Services.GetRequiredService<IApexPostRepository>()
+			.SaveAsync(new ApexPostSnapshot(
+				[CreateBranch("BR01")],
+				[manager],
+				[], [], [], [], [], [], []));
+		using var client = CreateManagerClient();
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.Forbidden,
+			(await client.GetAsync("/Transactions")).StatusCode);
+		Assert.Equal(
+			System.Net.HttpStatusCode.Forbidden,
+			(await client.GetAsync("/Transactions/Create")).StatusCode);
+	}
+
+	[Fact]
+	public async Task TransactionAccess_DoesNotTrustManagerRoleClaimWithoutPersistedManagerRole()
+	{
+		var branch = CreateBranch("BR01");
+		var staff = CreateStaff(
+			"manager-1", StaffRole.CounterClerk, "BR01");
+		await _factory.Services.GetRequiredService<IApexPostRepository>()
+			.SaveAsync(new ApexPostSnapshot(
+				[branch], [staff], [], [], [], [], [], [], []));
+		using var client = CreateManagerClient();
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.Forbidden,
+			(await client.GetAsync("/Transactions")).StatusCode);
 	}
 
 	[Fact]
@@ -610,6 +710,45 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 				[]));
 	}
 
+	private async Task SeedManagerAndBranchAsync()
+	{
+		var branch = CreateBranch("BR01");
+		var manager = CreateStaff(
+			"manager-1", StaffRole.BranchManager, "BR01");
+		await _factory.Services.GetRequiredService<IApexPostRepository>()
+			.SaveAsync(new ApexPostSnapshot(
+				[branch], [manager], [], [], [], [], [], [], []));
+	}
+
+	private async Task<(Guid LocalId, Guid ForeignOpenId,
+		Guid ForeignPaidId, Guid LegacyId)> SeedTransactionsForTwoBranchesAsync()
+	{
+		var localId = Guid.NewGuid();
+		var foreignOpenId = Guid.NewGuid();
+		var foreignPaidId = Guid.NewGuid();
+		var legacyId = Guid.NewGuid();
+		var baskets = new[]
+		{
+			CreateBasket(localId, "BR01", TransactionPaymentStatus.Paid,
+				"Local branch transaction"),
+			CreateBasket(foreignOpenId, "BR02", TransactionPaymentStatus.Open,
+				"Foreign branch transaction"),
+			CreateBasket(foreignPaidId, "BR02", TransactionPaymentStatus.Paid,
+				"Foreign branch transaction"),
+			CreateBasket(legacyId, null, TransactionPaymentStatus.Paid,
+				"Legacy branch transaction")
+		};
+		await _factory.Services.GetRequiredService<IApexPostRepository>()
+			.SaveAsync(new ApexPostSnapshot(
+				[CreateBranch("BR01"), CreateBranch("BR02")],
+				[
+					CreateStaff("manager-1", StaffRole.BranchManager, "BR01"),
+					CreateStaff("manager-2", StaffRole.BranchManager, "BR02")
+				],
+				[], [], [], [], [], [], baskets));
+		return (localId, foreignOpenId, foreignPaidId, legacyId);
+	}
+
 	private static async Task<(Guid TransactionId, string Token)>
 		GetCreateFormIdentityAsync(HttpClient client)
 	{
@@ -638,7 +777,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 		var values = new List<KeyValuePair<string, string>>
 		{
 			new("TransactionId", transactionId.ToString()),
-			new("BranchCode", "BR01"),
+			new("BranchCode", "BR02"),
 			new("GoodsSku", "BOX-01"),
 			new("GoodsQuantity", goodsQuantity),
 			new("IncludeShipping", "true"),
@@ -659,7 +798,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 		return new FormUrlEncodedContent(values);
 	}
 
-	private HttpClient CreateManagerClient()
+	private HttpClient CreateManagerClient(string staffId = "manager-1")
 	{
 		var client = _factory.CreateClient(
 			new WebApplicationFactoryClientOptions
@@ -668,6 +807,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			});
 		client.DefaultRequestHeaders.Add(
 			"X-Test-Role", "BranchManager");
+		client.DefaultRequestHeaders.Add("X-Test-StaffId", staffId);
 		return client;
 	}
 
@@ -696,16 +836,15 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			taxRates,
 			lineItems,
 			status,
-			[]);
-		var manager = new Staff(
-			"manager-1",
-			"Test Manager",
-			"manager@example.test",
-			StaffRole.BranchManager,
+			[],
 			new BranchCode("BR01"));
+		var manager = CreateStaff(
+			"manager-1", StaffRole.BranchManager, "BR01");
 		await _factory.Services.GetRequiredService<IApexPostRepository>()
 			.SaveAsync(new ApexPostSnapshot(
-				[], [manager], [], [], [], [], [], [], [basket]));
+				[CreateBranch("BR01")],
+				[manager],
+				[], [], [], [], [], [], [basket]));
 		return transactionId;
 	}
 
@@ -759,11 +898,19 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			var role = Request.Headers["X-Test-Role"].ToString();
 			if (string.IsNullOrWhiteSpace(role))
 				return Task.FromResult(AuthenticateResult.NoResult());
+			var staffId = Request.Headers["X-Test-StaffId"].ToString();
+			if (string.IsNullOrWhiteSpace(staffId))
+				staffId = "manager-1";
 
 			var identity = new ClaimsIdentity(
 				[
 					new Claim(ClaimTypes.NameIdentifier, "not-the-staff-id"),
-					new Claim("StaffId", "manager-1"),
+					new Claim("StaffId", staffId),
+					new Claim("Role", role),
+					new Claim(
+						"BranchCode",
+						Request.Headers["X-Test-BranchCode"].FirstOrDefault()
+							?? "BR02"),
 					new Claim(ClaimTypes.Role, role)
 				],
 				TestScheme);
@@ -772,4 +919,54 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			return Task.FromResult(AuthenticateResult.Success(ticket));
 		}
 	}
+
+	private static TransactionBasket CreateBasket(
+		Guid id,
+		string? branchCode,
+		TransactionPaymentStatus status,
+		string description)
+	{
+		var items = new[]
+		{
+			new TransactionLineItem(
+				description,
+				TransactionItemType.Service,
+				new Money(10m, "INR"),
+				1,
+				TaxCategory.Standard)
+		};
+		return TransactionBasket.Reconstitute(
+			id,
+			"INR",
+			new Dictionary<TaxCategory, decimal>
+			{
+				[TaxCategory.Standard] = 0m
+			},
+			items,
+			status,
+			[],
+			branchCode is null ? null : new BranchCode(branchCode));
+	}
+
+	private static Branch CreateBranch(string branchCode)
+	{
+		var code = new BranchCode(branchCode);
+		return new Branch(
+			code,
+			$"Branch {branchCode}",
+			"Test Region",
+			"09:00-17:00",
+			[new CounterTerminal($"COUNTER-{branchCode}", "Counter")]);
+	}
+
+	private static Staff CreateStaff(
+		string staffId,
+		StaffRole role,
+		string branchCode) =>
+		new(
+			staffId,
+			$"Test {staffId}",
+			$"{staffId}@example.test",
+			role,
+			new BranchCode(branchCode));
 }
