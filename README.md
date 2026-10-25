@@ -13,6 +13,7 @@ ApexPost is a .NET 10 / C# 14 ASP.NET Core MVC application for postal branch cou
 ## Implemented workflows and protections
 
 - Goods and shipping can be processed in one transaction. Stock, configured shipping rates, parcel limits, tax configuration, branch attribution, and duplicate submission checks are applied before persistence.
+- Active Counter Clerks and Branch Managers can process sales at their persisted home branch. Active Branch Managers can adjust stock at their home branch through an audited workflow.
 - Transaction lists, details, voids, and refunds are limited to the active Branch Manager's persisted home branch. Legacy transactions with no branch attribution are not exposed.
 - Money orders use an explicitly configured high-value threshold. High-value orders require successful manager-attested, in-person identity verification; only a masked document identifier is retained.
 - Staff sign-in uses a separately provisioned JSON credential file and secure cookie authentication. Demo data does not create credentials or enable sign-in.

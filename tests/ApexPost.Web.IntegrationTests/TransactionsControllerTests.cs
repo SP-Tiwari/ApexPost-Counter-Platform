@@ -223,7 +223,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	}
 
 	[Fact]
-	public async Task CreateTransactionPage_RequiresBranchManager()
+	public async Task CreateTransactionPage_RequiresAuthenticatedStaff()
 	{
 		var client = _factory.CreateClient();
 
@@ -241,10 +241,66 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			System.Net.HttpStatusCode.Forbidden,
 			(await client.GetAsync("/Transactions/Create")).StatusCode);
 		Assert.Equal(
-			System.Net.HttpStatusCode.Forbidden,
+			System.Net.HttpStatusCode.BadRequest,
 			(await client.PostAsync(
 				"/Transactions/Create",
 				new FormUrlEncodedContent([]))).StatusCode);
+	}
+
+	[Fact]
+	public async Task CreateTransaction_CounterClerkSaleUsesPersistedHomeBranch()
+	{
+		await SeedMixedBasketDataAsync(StaffRole.CounterClerk);
+		using var client = CreateStaffClient(
+			"CounterClerk", "manager-1", "BR02");
+		var (transactionId, token) =
+			await GetCreateFormIdentityAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create?branchCode=BR02",
+			CreateMixedBasketForm(transactionId, token));
+
+		Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
+		Assert.Equal(
+			$"/Transactions/{transactionId}",
+			response.Headers.Location?.OriginalString);
+		var snapshot = await GetRepositoryAsync();
+		var basket = Assert.Single(snapshot.TransactionBaskets);
+		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Equal(new BranchCode("BR01"), basket.BranchCode);
+		Assert.Equal(2, Assert.Single(snapshot.BranchStocks).Quantity);
+	}
+
+	[Theory]
+	[InlineData("CounterClerk", "manager-1", true)]
+	[InlineData("CounterClerk", "unknown-clerk", false)]
+	public async Task CreateTransaction_InactiveOrUnknownClerkIsForbidden(
+		string role,
+		string staffId,
+		bool inactive)
+	{
+		await SeedMixedBasketDataAsync(
+			StaffRole.CounterClerk,
+			inactiveStaff: inactive);
+		using var client = CreateStaffClient(role, staffId);
+
+		var response = await client.GetAsync("/Transactions/Create");
+
+		Assert.Equal(System.Net.HttpStatusCode.Forbidden, response.StatusCode);
+	}
+
+	[Fact]
+	public async Task CreateTransaction_ClosedBranchCannotAcceptSale()
+	{
+		await SeedMixedBasketDataAsync(closeBranch: true);
+		using var client = CreateManagerClient();
+
+		var response = await client.GetAsync("/Transactions/Create");
+
+		Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+		Assert.Empty((await GetRepositoryAsync()).TransactionBaskets);
+		Assert.Equal(4, Assert.Single(
+			(await GetRepositoryAsync()).BranchStocks).Quantity);
 	}
 
 	[Fact]
@@ -431,7 +487,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	[Fact]
 	public async Task CreateTransaction_RejectsMixedCurrencies()
 	{
-		await SeedMixedBasketDataAsync(new ShippingRate(
+		await SeedMixedBasketDataAsync(shippingRate: new ShippingRate(
 			"ZONE-A",
 			ShippingServiceLevel.Standard,
 			new Money(10m, "USD"),
@@ -698,6 +754,9 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	}
 
 	private async Task SeedMixedBasketDataAsync(
+		StaffRole staffRole = StaffRole.BranchManager,
+		bool inactiveStaff = false,
+		bool closeBranch = false,
 		ShippingRate? shippingRate = null)
 	{
 		var branchCode = new BranchCode("BR01");
@@ -713,12 +772,16 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			"Test Region",
 			"09:00-17:00",
 			[new CounterTerminal("COUNTER-1", "Counter")]);
+		if (closeBranch)
+			branch.Close();
 		var manager = new Staff(
 			"manager-1",
 			"Test Manager",
 			"manager@example.test",
-			StaffRole.BranchManager,
+			staffRole,
 			branchCode);
+		if (inactiveStaff)
+			manager.Deactivate();
 		await _factory.Services.GetRequiredService<IApexPostRepository>()
 			.SaveAsync(new ApexPostSnapshot(
 				[branch],
@@ -824,7 +887,13 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 		return new FormUrlEncodedContent(values);
 	}
 
-	private HttpClient CreateManagerClient(string staffId = "manager-1")
+	private HttpClient CreateManagerClient(string staffId = "manager-1") =>
+		CreateStaffClient("BranchManager", staffId);
+
+	private HttpClient CreateStaffClient(
+		string role,
+		string staffId,
+		string? branchCode = null)
 	{
 		var client = _factory.CreateClient(
 			new WebApplicationFactoryClientOptions
@@ -832,8 +901,11 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 				AllowAutoRedirect = false
 			});
 		client.DefaultRequestHeaders.Add(
-			"X-Test-Role", "BranchManager");
+			"X-Test-Role", role);
 		client.DefaultRequestHeaders.Add("X-Test-StaffId", staffId);
+		if (branchCode is not null)
+			client.DefaultRequestHeaders.Add(
+				"X-Test-BranchCode", branchCode);
 		return client;
 	}
 
