@@ -69,6 +69,36 @@ builder.Services
 
 builder.Services.AddAuthorization();
 
+var parcelTrackingOrigins = builder.Configuration
+	.GetSection("ParcelTracking:AllowedOrigins")
+	.Get<string[]>() ?? [];
+foreach (var configuredOrigin in parcelTrackingOrigins)
+{
+	if (!Uri.TryCreate(configuredOrigin, UriKind.Absolute, out var origin) ||
+		(origin.Scheme != Uri.UriSchemeHttp &&
+			origin.Scheme != Uri.UriSchemeHttps) ||
+		!string.IsNullOrEmpty(origin.UserInfo) ||
+		origin.AbsolutePath != "/" ||
+		!string.IsNullOrEmpty(origin.Query) ||
+		!string.IsNullOrEmpty(origin.Fragment) ||
+		configuredOrigin.Contains('*'))
+	{
+		throw new InvalidOperationException(
+			"ParcelTracking:AllowedOrigins must contain exact HTTP or HTTPS origins without paths, credentials, queries, fragments, or wildcards.");
+	}
+}
+
+builder.Services.AddCors(options =>
+	options.AddPolicy("ParcelTracking", policy =>
+	{
+		if (parcelTrackingOrigins.Length > 0)
+		{
+			policy.WithOrigins(parcelTrackingOrigins)
+				.WithMethods("GET")
+				.WithHeaders("Accept");
+		}
+	}));
+
 var storageDirectory = builder.Configuration["Storage:Directory"];
 
 if (string.IsNullOrWhiteSpace(storageDirectory))
@@ -269,6 +299,47 @@ builder.Services.AddRateLimiter(options =>
 			}));
 });
 
+var protectedPartnerPathPrefixes = builder.Configuration
+	.GetSection("ApiSecurity:ProtectedPathPrefixes")
+	.Get<string[]>() ?? [];
+PartitionedRateLimiter<HttpContext>? partnerRateLimiter = null;
+if (protectedPartnerPathPrefixes.Length > 0)
+{
+	var partnerPermitLimit = builder.Configuration.GetValue<int?>(
+		"ApiSecurity:PartnerRateLimit:PermitLimit");
+	var partnerWindowSeconds = builder.Configuration.GetValue<int?>(
+		"ApiSecurity:PartnerRateLimit:WindowSeconds");
+	if (partnerPermitLimit is null or <= 0 ||
+		partnerWindowSeconds is null or <= 0)
+	{
+		throw new InvalidOperationException(
+			"Configure positive ApiSecurity:PartnerRateLimit:PermitLimit and WindowSeconds when partner path prefixes are enabled.");
+	}
+
+	partnerRateLimiter = PartitionedRateLimiter.Create<HttpContext, string>(
+		context =>
+		{
+			if (!context.Items.TryGetValue(
+				PartnerRateLimitingMiddleware.PartnerIdentityItemKey,
+				out var identity) ||
+				identity is not string partnerIdentity)
+			{
+				return RateLimitPartition.GetNoLimiter("unvalidated");
+			}
+
+			return RateLimitPartition.GetFixedWindowLimiter(
+				partnerIdentity,
+				_ => new FixedWindowRateLimiterOptions
+				{
+					PermitLimit = partnerPermitLimit.Value,
+					Window = TimeSpan.FromSeconds(partnerWindowSeconds.Value),
+					QueueLimit = 0,
+					AutoReplenishment = true
+				});
+		});
+	builder.Services.AddSingleton(partnerRateLimiter);
+}
+
 var app = builder.Build();
 
 if (app.Configuration.GetValue<bool>("DemoData:Initialize"))
@@ -295,14 +366,19 @@ app.UseMiddleware<MaintenanceModeMiddleware>();
 
 app.UseHttpsRedirection();
 app.UseRouting();
+app.UseCors("ParcelTracking");
 
 app.UseMiddleware<ApiKeyAndIpRestrictionMiddleware>();
+if (partnerRateLimiter is not null)
+	app.UseMiddleware<PartnerRateLimitingMiddleware>();
 
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapStaticAssets();
+
+app.MapGet("/health", () => Results.Ok(new { status = "Healthy" }));
 
 app.MapControllerRoute(
 	name: "default",

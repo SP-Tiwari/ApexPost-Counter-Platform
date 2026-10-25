@@ -174,6 +174,10 @@ Partner API protection is opt-in and path-scoped through `ApiSecurity:ProtectedP
 
 `ApiSecurity:AllowedIpAddresses` optionally contains exact IP addresses allowed for those same protected prefixes. An empty list disables IP filtering; a non-empty list rejects requests with no remote address or an address not in the list using HTTP 403. IPv4-mapped IPv6 addresses are normalized. The middleware uses the connection's `RemoteIpAddress` and does not trust `X-Forwarded-For`; deployments behind a proxy must configure trusted forwarded headers before relying on this restriction. The API security middleware runs after routing and maintenance/HTTPS handling, but before rate limiting, authentication, and authorization. No partner API route currently exists; add the middleware scope only to explicitly configured partner/API path prefixes.
 
+When partner prefixes are configured, both `ApiSecurity:PartnerRateLimit:PermitLimit` and `ApiSecurity:PartnerRateLimit:WindowSeconds` must be positive deployment settings; there are no production defaults. The partner rate-limit middleware runs immediately after API-key/IP validation. It partitions by the SHA-256 digest of the validated configured API key, never by a caller-supplied identity header, and rejects excess requests with HTTP 429. Since the current API-key configuration contains one shared key, all callers using it share one bucket; distinct per-partner buckets require a future validated multi-key identity configuration.
+
+`ParcelTracking:AllowedOrigins` is an exact-origin configuration array for CORS. It defaults to empty, rejects wildcard/path-based values, permits only GET and the `Accept` request header, and does not enable credentials. The setting must be populated by deployment configuration with the approved origin; no origin is invented in source control. `/health` is a liveness response containing only `{"status":"Healthy"}` and does not expose configuration or dependency details. There is no parcel-status endpoint: `ShippingItem` has no tracking status, tracking number, or event history, so returning a parcel status would require unsupported business data.
+
 The sign-in form and sign-out action require antiforgery validation. Return URLs are restricted to local destinations. Passwords and other secrets must never be logged. Transaction pages require the BranchManager role and enforce branch scope through the persisted staff record and basket attribution.
 
 
@@ -244,7 +248,7 @@ The final solution must include meaningful business-rule tests and at least six 
 
 \## 13. Design Artifacts and Known Limitations
 
-Architecture and middleware pipeline diagrams, three ADRs, C# 14 implementation evidence, and an audit sample matching the current `AuditRecord` schema are maintained under `docs/` and `data/`; see [docs/architecture.md](docs/architecture.md), [docs/csharp-14-evidence.md](docs/csharp-14-evidence.md), [docs/adr/](docs/adr/), and [data/AUDIT-SAMPLE.json](data/AUDIT-SAMPLE.json).
+Architecture and middleware pipeline diagrams, ADRs, C# 14 implementation evidence, and an audit sample matching the current `AuditRecord` schema are maintained under `docs/` and `data/`; see [docs/architecture.md](docs/architecture.md), [docs/csharp-14-evidence.md](docs/csharp-14-evidence.md), [docs/adr/](docs/adr/), and [data/AUDIT-SAMPLE.json](data/AUDIT-SAMPLE.json).
 
 Demo initialization is opt-in (`DemoData:Initialize`, default `false`) and runs only against an entirely empty snapshot. Seeded branch/staff/product labels and rates are fictional examples. Demo tax rates are zero-valued fixtures only. No demo credential, password hash, secret, parcel maximum, or money-order threshold is created. Demo staff cannot authenticate until an operator separately provisions credentials, and the demo credential file is not supplied.
 

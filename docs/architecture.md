@@ -28,8 +28,10 @@ flowchart TD
     Headers --> Maintenance[MaintenanceModeMiddleware]
     Maintenance --> HTTPS[HTTPS redirection]
     HTTPS --> Routing[Routing]
-    Routing --> Partner[API key and IP restriction]
-    Partner --> Rate[Rate limiter]
+    Routing --> CORS[Configured exact-origin CORS]
+    CORS --> Partner[API key and IP restriction]
+    Partner --> PartnerRate[Validated partner rate limiter]
+    PartnerRate --> Rate[Staff sign-in rate limiter]
     Rate --> Authentication[Cookie authentication]
     Authentication --> Authorization[Authorization]
     Authorization --> MVC[MVC endpoint and AuditActionFilter]
@@ -37,6 +39,8 @@ flowchart TD
 ```
 
 Correlation is established before exception handling so error responses can include the same ID. Security headers wrap maintenance and downstream responses. Routing precedes endpoint-specific partner restrictions and rate-limit policy selection; authentication and authorization run before MVC actions.
+
+The CORS policy is configured by `ParcelTracking:AllowedOrigins`, defaults to no allowed origins, and does not permit credentials. Partner rate limiting runs only after a request passes the API-key/IP middleware; its identity is derived from the validated API-key digest, not request headers. `/health` returns a minimal liveness response. No parcel-status endpoint is present because the persisted shipping model has no authoritative tracking status or event history.
 
 ## Data and security boundaries
 
