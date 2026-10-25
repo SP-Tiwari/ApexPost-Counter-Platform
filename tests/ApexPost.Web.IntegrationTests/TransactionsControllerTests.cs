@@ -7,10 +7,6 @@ using ApexPost.Domain.Enums;
 using ApexPost.Domain.Notifications;
 using ApexPost.Domain.ValueObjects;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.AspNetCore.TestHost;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 

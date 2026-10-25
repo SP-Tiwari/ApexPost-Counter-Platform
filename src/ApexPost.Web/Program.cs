@@ -2,15 +2,11 @@ using System.Globalization;
 using ApexPost.Application.Persistence;
 using ApexPost.Application.Auditing;
 using ApexPost.Application.Security;
-using ApexPost.Application.Services;
-using ApexPost.Domain.Enums;
-using ApexPost.Domain.ValueObjects;
 using ApexPost.Infrastructure.Persistence;
 using ApexPost.Web.Authentication;
 using ApexPost.Web.Filters;
 using ApexPost.Web.Middleware;
 using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.AspNetCore.Mvc;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);

@@ -1,7 +1,4 @@
 using ApexPost.Domain;
-using ApexPost.Domain.Entities;
-using ApexPost.Domain.Enums;
-using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Domain.Services;
 

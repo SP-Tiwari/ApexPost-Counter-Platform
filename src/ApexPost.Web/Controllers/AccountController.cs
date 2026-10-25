@@ -1,13 +1,8 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 using System.Text.Json;
-using ApexPost.Application.Services;
-using ApexPost.Domain.Entities;
-using ApexPost.Web.Models;
 
 namespace ApexPost.Web.Controllers;
 

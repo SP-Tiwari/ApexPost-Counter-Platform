@@ -1,9 +1,6 @@
 using System.Collections.Concurrent;
 using ApexPost.Web.Middleware;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace ApexPost.Web.IntegrationTests;

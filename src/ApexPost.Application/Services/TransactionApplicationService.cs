@@ -1,8 +1,3 @@
-using ApexPost.Application.Persistence;
-using ApexPost.Domain.Entities;
-using ApexPost.Domain.Enums;
-using ApexPost.Domain.Rules;
-using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Application.Services;
 

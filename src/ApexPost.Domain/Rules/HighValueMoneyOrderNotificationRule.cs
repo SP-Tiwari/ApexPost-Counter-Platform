@@ -1,6 +1,3 @@
-using ApexPost.Domain.Entities;
-using ApexPost.Domain.Notifications;
-using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Domain.Rules;
 

@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using Microsoft.AspNetCore.Mvc;
-using ApexPost.Web.Models;
 
 namespace ApexPost.Web.Controllers;
 

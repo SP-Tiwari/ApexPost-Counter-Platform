@@ -1,6 +1,5 @@
 
 using ApexPost.Domain;
-using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Domain.Entities;
 

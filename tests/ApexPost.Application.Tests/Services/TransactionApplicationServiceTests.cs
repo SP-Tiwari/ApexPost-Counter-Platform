@@ -1,9 +1,4 @@
-using ApexPost.Application.Persistence;
-using ApexPost.Application.Services;
-using ApexPost.Domain.Entities;
-using ApexPost.Domain.Enums;
 using ApexPost.Domain.Notifications;
-using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Application.Tests.Services;
 

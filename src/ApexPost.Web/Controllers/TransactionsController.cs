@@ -1,11 +1,4 @@
-using ApexPost.Application.Services;
-using ApexPost.Domain.Entities;
-using ApexPost.Domain.Enums;
 using ApexPost.Domain.Notifications;
-using ApexPost.Domain.ValueObjects;
-using ApexPost.Web.Models;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 
 namespace ApexPost.Web.Controllers;
 

@@ -1,0 +1,7 @@
+global using ApexPost.Application.Services;
+global using ApexPost.Domain.Entities;
+global using ApexPost.Domain.Enums;
+global using ApexPost.Domain.ValueObjects;
+global using ApexPost.Web.Models;
+global using Microsoft.AspNetCore.Authorization;
+global using Microsoft.AspNetCore.Mvc;

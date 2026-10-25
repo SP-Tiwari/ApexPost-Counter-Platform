@@ -1,7 +1,4 @@
 using System.Collections.ObjectModel;
-using ApexPost.Domain.Enums;
-using ApexPost.Domain.Notifications;
-using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Domain.Entities;
 

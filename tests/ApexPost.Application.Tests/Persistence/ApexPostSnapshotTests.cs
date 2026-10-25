@@ -1,6 +1,3 @@
-using ApexPost.Application.Persistence;
-using ApexPost.Domain.Entities;
-using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Application.Tests.Persistence;
 

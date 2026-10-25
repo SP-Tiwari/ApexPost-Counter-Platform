@@ -1,8 +1,5 @@
 using ApexPost.Application.Persistence;
 using ApexPost.Infrastructure.Persistence;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace ApexPost.Web.IntegrationTests;
 

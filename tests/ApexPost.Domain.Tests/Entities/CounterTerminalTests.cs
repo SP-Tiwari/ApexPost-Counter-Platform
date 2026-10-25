@@ -1,5 +1,4 @@
 ﻿
-using ApexPost.Domain.Entities;
 
 namespace ApexPost.Domain.Tests.Entities;
 
