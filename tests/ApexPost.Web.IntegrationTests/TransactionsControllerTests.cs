@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using ApexPost.Application.Persistence;
 using ApexPost.Domain.Entities;
 using ApexPost.Domain.Enums;
+using ApexPost.Domain.Notifications;
 using ApexPost.Domain.ValueObjects;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
@@ -215,6 +216,298 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 		Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
 	}
 
+	[Theory]
+	[InlineData("void")]
+	[InlineData("refund")]
+	public async Task StatusChange_RequiresBranchManager(string action)
+	{
+		var transactionId = await SeedTransactionAsync(
+			action == "refund"
+				? TransactionPaymentStatus.Paid
+				: TransactionPaymentStatus.Open);
+		using var client = _factory.CreateClient(
+			new WebApplicationFactoryClientOptions
+			{
+				AllowAutoRedirect = false
+			});
+
+		var anonymousResponse = await client.PostAsync(
+			$"/Transactions/{transactionId}/{action}",
+			CreateActionForm("Valid reason"));
+		Assert.Equal(
+			System.Net.HttpStatusCode.Unauthorized,
+			anonymousResponse.StatusCode);
+
+		client.DefaultRequestHeaders.Add("X-Test-Role", "CounterClerk");
+		var clerkResponse = await client.PostAsync(
+			$"/Transactions/{transactionId}/{action}",
+			CreateActionForm("Valid reason"));
+		Assert.Equal(
+			System.Net.HttpStatusCode.Forbidden,
+			clerkResponse.StatusCode);
+	}
+
+	[Theory]
+	[InlineData("void", "")]
+	[InlineData("refund", "")]
+	[InlineData("void", " ")]
+	public async Task StatusChange_RejectsMissingOrInvalidReason(
+		string action,
+		string reason)
+	{
+		var transactionId = await SeedTransactionAsync(
+			action == "refund"
+				? TransactionPaymentStatus.Paid
+				: TransactionPaymentStatus.Open);
+		using var client = CreateManagerClient();
+		var token = await GetAntiforgeryTokenAsync(client, transactionId);
+
+		var response = await client.PostAsync(
+			$"/Transactions/{transactionId}/{action}",
+			CreateActionForm(reason, token));
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.BadRequest,
+			response.StatusCode);
+		Assert.Contains(
+			"Enter a reason",
+			await response.Content.ReadAsStringAsync(),
+			StringComparison.Ordinal);
+	}
+
+	[Theory]
+	[InlineData("void", TransactionPaymentStatus.Open)]
+	[InlineData("refund", TransactionPaymentStatus.Paid)]
+	public async Task StatusChange_ManagerRequestPersistsTransitionAndRedirects(
+		string action,
+		TransactionPaymentStatus initialStatus)
+	{
+		var transactionId = await SeedTransactionAsync(initialStatus);
+		using var client = CreateManagerClient();
+		var token = await GetAntiforgeryTokenAsync(client, transactionId);
+		const string reason = "Customer requested this transaction change";
+
+		var response = await client.PostAsync(
+			$"/Transactions/{transactionId}/{action}",
+			CreateActionForm(reason, token));
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.Redirect,
+			response.StatusCode);
+		Assert.Equal(
+			$"/Transactions/{transactionId}",
+			response.Headers.Location?.OriginalString);
+		var detailsResponse = await client.GetAsync(
+			response.Headers.Location);
+		Assert.Contains(
+			action == "void" ? "Transaction voided." : "Transaction refunded.",
+			await detailsResponse.Content.ReadAsStringAsync(),
+			StringComparison.Ordinal);
+		var basket = Assert.Single(
+			(await GetRepositoryAsync()).TransactionBaskets,
+			item => item.Id == transactionId);
+		Assert.Equal(
+			action == "void"
+				? TransactionPaymentStatus.Voided
+				: TransactionPaymentStatus.Refunded,
+			basket.PaymentStatus);
+		Assert.Equal(
+			reason,
+			action == "void"
+				? Assert.IsType<TransactionVoidedNotification>(
+					Assert.Single(basket.Notifications)).Reason
+				: Assert.IsType<TransactionRefundedNotification>(
+					Assert.Single(basket.Notifications)).Reason);
+	}
+
+	[Theory]
+	[InlineData("void")]
+	[InlineData("refund")]
+	public async Task StatusChange_NonexistentTransactionReturnsNotFound(
+		string action)
+	{
+		var existingId = await SeedTransactionAsync(
+			TransactionPaymentStatus.Open);
+		using var client = CreateManagerClient();
+		var token = await GetAntiforgeryTokenAsync(client, existingId);
+
+		var response = await client.PostAsync(
+			$"/Transactions/{Guid.NewGuid()}/{action}",
+			CreateActionForm("Valid reason", token));
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.NotFound,
+			response.StatusCode);
+	}
+
+	[Fact]
+	public async Task StatusChange_RequiresAntiforgeryToken()
+	{
+		var transactionId = await SeedTransactionAsync(
+			TransactionPaymentStatus.Open);
+		using var client = CreateManagerClient();
+
+		var response = await client.PostAsync(
+			$"/Transactions/{transactionId}/void",
+			CreateActionForm("Valid reason"));
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.BadRequest,
+			response.StatusCode);
+		Assert.Equal(
+			TransactionPaymentStatus.Open,
+			Assert.Single(
+				(await GetRepositoryAsync()).TransactionBaskets,
+				item => item.Id == transactionId).PaymentStatus);
+	}
+
+	[Fact]
+	public async Task StatusChange_WithEmptyTransactionIdReturnsBadRequest()
+	{
+		var existingTransactionId = await SeedTransactionAsync(
+			TransactionPaymentStatus.Open);
+		using var client = CreateManagerClient();
+		var token = await GetAntiforgeryTokenAsync(
+			client, existingTransactionId);
+		var response = await client.PostAsync(
+			$"/Transactions/{Guid.Empty}/void",
+			CreateActionForm("Valid reason", token));
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.BadRequest,
+			response.StatusCode);
+	}
+
+	[Fact]
+	public async Task StatusChange_WhenCurrentStateRejectsOperationReturnsConflict()
+	{
+		var transactionId = await SeedTransactionAsync(
+			TransactionPaymentStatus.Paid);
+		using var client = CreateManagerClient();
+		var token = await GetAntiforgeryTokenAsync(client, transactionId);
+
+		var response = await client.PostAsync(
+			$"/Transactions/{transactionId}/void",
+			CreateActionForm("Attempted void", token));
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.Conflict,
+			response.StatusCode);
+		Assert.Contains(
+			"current state",
+			await response.Content.ReadAsStringAsync(),
+			StringComparison.Ordinal);
+		Assert.Equal(
+			TransactionPaymentStatus.Paid,
+			Assert.Single(
+				(await GetRepositoryAsync()).TransactionBaskets,
+				item => item.Id == transactionId).PaymentStatus);
+	}
+
+	[Fact]
+	public async Task Details_ShowsAvailableManagerActionWithAntiforgeryForm()
+	{
+		var transactionId = await SeedTransactionAsync(
+			TransactionPaymentStatus.Open);
+		using var client = CreateManagerClient();
+
+		var response = await client.GetAsync($"/Transactions/{transactionId}");
+		var html = await response.Content.ReadAsStringAsync();
+
+		Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+		Assert.Contains("Void transaction", html, StringComparison.Ordinal);
+		Assert.Contains("name=\"__RequestVerificationToken\"", html,
+			StringComparison.Ordinal);
+		Assert.Contains($"/Transactions/{transactionId}/void", html,
+			StringComparison.Ordinal);
+	}
+
+	private HttpClient CreateManagerClient()
+	{
+		var client = _factory.CreateClient(
+			new WebApplicationFactoryClientOptions
+			{
+				AllowAutoRedirect = false
+			});
+		client.DefaultRequestHeaders.Add(
+			"X-Test-Role", "BranchManager");
+		return client;
+	}
+
+	private async Task<Guid> SeedTransactionAsync(
+		TransactionPaymentStatus status)
+	{
+		var transactionId = Guid.NewGuid();
+		var taxRates = new Dictionary<TaxCategory, decimal>
+		{
+			[TaxCategory.Standard] = 0m
+		};
+		var lineItems = status == TransactionPaymentStatus.Paid
+			? new[]
+			{
+				new TransactionLineItem(
+					"Counter service",
+					TransactionItemType.Service,
+					new Money(10m, "INR"),
+					1,
+					TaxCategory.Standard)
+			}
+			: [];
+		var basket = TransactionBasket.Reconstitute(
+			transactionId,
+			"INR",
+			taxRates,
+			lineItems,
+			status,
+			[]);
+		var manager = new Staff(
+			"manager-1",
+			"Test Manager",
+			"manager@example.test",
+			StaffRole.BranchManager,
+			new BranchCode("BR01"));
+		await _factory.Services.GetRequiredService<IApexPostRepository>()
+			.SaveAsync(new ApexPostSnapshot(
+				[], [manager], [], [], [], [], [], [], [basket]));
+		return transactionId;
+	}
+
+	private async Task<ApexPostSnapshot> GetRepositoryAsync() =>
+		await _factory.Services.GetRequiredService<IApexPostRepository>()
+			.LoadAsync();
+
+	private static async Task<string> GetAntiforgeryTokenAsync(
+		HttpClient client,
+		Guid transactionId)
+	{
+		var response = await client.GetAsync($"/Transactions/{transactionId}");
+		Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+		var html = await response.Content.ReadAsStringAsync();
+		var token = Regex.Match(
+			html,
+			"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"")
+			.Groups[1].Value;
+		Assert.False(string.IsNullOrWhiteSpace(token));
+		return token;
+	}
+
+	private static FormUrlEncodedContent CreateActionForm(
+		string reason,
+		string? token = null)
+	{
+		var values = new List<KeyValuePair<string, string>>
+		{
+			new("Reason", reason)
+		};
+		if (token is not null)
+		{
+			values.Add(new(
+				"__RequestVerificationToken", token));
+		}
+
+		return new FormUrlEncodedContent(values);
+	}
+
 	private sealed class TestAuthenticationHandler(
 		IOptionsMonitor<AuthenticationSchemeOptions> options,
 		ILoggerFactory logger,
@@ -232,7 +525,8 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 
 			var identity = new ClaimsIdentity(
 				[
-					new Claim(ClaimTypes.NameIdentifier, "test-staff"),
+					new Claim(ClaimTypes.NameIdentifier, "not-the-staff-id"),
+					new Claim("StaffId", "manager-1"),
 					new Claim(ClaimTypes.Role, role)
 				],
 				TestScheme);
