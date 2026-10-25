@@ -1,5 +1,6 @@
 using ApexPost.Application.Persistence;
 using ApexPost.Domain.Entities;
+using ApexPost.Domain.Enums;
 using ApexPost.Domain.ValueObjects;
 using ApexPost.Infrastructure.Persistence;
 
@@ -40,11 +41,19 @@ public sealed class DemoDataInitializerTests : IAsyncLifetime
 		Assert.Equal(30, snapshot.Products.Count);
 		Assert.Equal(10, snapshot.ShippingRates.Count);
 		Assert.Equal(40, snapshot.TransactionBaskets.Count);
+		var branchCodes = snapshot.Branches
+			.Select(branch => branch.Code)
+			.ToHashSet();
 		Assert.All(snapshot.Staff, staff =>
 		{
 			Assert.StartsWith("DEMO ", staff.Name, StringComparison.Ordinal);
 			Assert.EndsWith("@example.invalid", staff.Email, StringComparison.Ordinal);
+			Assert.Contains(staff.HomeBranchCode, branchCodes);
 		});
+		Assert.Contains(StaffRole.CounterClerk, snapshot.Staff.Select(staff => staff.Role));
+		Assert.Contains(StaffRole.BranchManager, snapshot.Staff.Select(staff => staff.Role));
+		Assert.Contains(StaffRole.Auditor, snapshot.Staff.Select(staff => staff.Role));
+		Assert.Contains(StaffRole.Administrator, snapshot.Staff.Select(staff => staff.Role));
 		Assert.All(snapshot.TransactionBaskets, basket =>
 			Assert.Equal(
 				ApexPost.Domain.Enums.TransactionPaymentStatus.Paid,

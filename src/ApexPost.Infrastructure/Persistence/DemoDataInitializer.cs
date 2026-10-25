@@ -41,9 +41,13 @@ public sealed class DemoDataInitializer(IApexPostRepository repository)
 			.Select(index =>
 			{
 				var branchIndex = (index - 1) / 4;
-				var role = (index - 1) % 4 == 0
-					? StaffRole.BranchManager
-					: StaffRole.CounterClerk;
+				var role = ((index - 1) % 4) switch
+				{
+					0 => StaffRole.CounterClerk,
+					1 => StaffRole.BranchManager,
+					2 => StaffRole.Auditor,
+					_ => StaffRole.Administrator
+				};
 				return new Staff(
 					$"demo-staff-{index:00}",
 					$"DEMO Staff {index:00} (not provisioned)",
