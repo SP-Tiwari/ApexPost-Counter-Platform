@@ -165,6 +165,8 @@ app.UseMiddleware<MaintenanceModeMiddleware>();
 app.UseHttpsRedirection();
 app.UseRouting();
 
+app.UseMiddleware<ApiKeyAndIpRestrictionMiddleware>();
+
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
