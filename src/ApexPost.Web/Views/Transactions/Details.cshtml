@@ -4,6 +4,17 @@
 }
 
 <h1>Transaction details</h1>
+
+@if (TempData["TransactionActionStatus"] is string statusMessage)
+{
+    <div class="alert alert-success" role="status">@statusMessage</div>
+}
+
+@if (ViewData["TransactionActionError"] is string errorMessage)
+{
+    <div class="alert alert-danger" role="alert">@errorMessage</div>
+}
+
 <dl class="row">
     <dt class="col-sm-3">Transaction ID</dt>
     <dd class="col-sm-9">@Model.Id</dd>
@@ -58,6 +69,43 @@ else
             <li>@notification.Type: @notification.Reason</li>
         }
     </ul>
+}
+
+@if (Model.PaymentStatus == ApexPost.Domain.Enums.TransactionPaymentStatus.Open)
+{
+    <h2>Void transaction</h2>
+    <form asp-controller="Transactions"
+          asp-action="Void"
+          asp-route-transactionId="@Model.Id"
+          method="post">
+        <div class="mb-3">
+            <label for="void-reason" class="form-label">Reason</label>
+            <input id="void-reason"
+                   name="Reason"
+                   class="form-control"
+                   required
+                   maxlength="500" />
+        </div>
+        <button type="submit" class="btn btn-danger">Void transaction</button>
+    </form>
+}
+else if (Model.PaymentStatus == ApexPost.Domain.Enums.TransactionPaymentStatus.Paid)
+{
+    <h2>Refund transaction</h2>
+    <form asp-controller="Transactions"
+          asp-action="Refund"
+          asp-route-transactionId="@Model.Id"
+          method="post">
+        <div class="mb-3">
+            <label for="refund-reason" class="form-label">Reason</label>
+            <input id="refund-reason"
+                   name="Reason"
+                   class="form-control"
+                   required
+                   maxlength="500" />
+        </div>
+        <button type="submit" class="btn btn-warning">Refund transaction</button>
+    </form>
 }
 
 <a asp-controller="Transactions" asp-action="Index">Back to transactions</a>
