@@ -26,11 +26,16 @@ public sealed class MoneyOrderApplicationService
 		: _highValueThreshold!.Currency;
 
 	public async Task<IReadOnlyList<MoneyOrder>> GetMoneyOrdersAsync(
+		string staffId,
 		CancellationToken cancellationToken = default)
 	{
 		var snapshot = await _repository.LoadAsync(cancellationToken)
 			.ConfigureAwait(false);
-		return Array.AsReadOnly(snapshot.MoneyOrders.ToArray());
+		var staff = FindActiveBranchManager(snapshot, staffId);
+		return Array.AsReadOnly(snapshot.MoneyOrders
+			.Where(order =>
+				order.ProcessingBranchCode == staff.HomeBranchCode)
+			.ToArray());
 	}
 
 	public Task CreateAndProcessAsync(
@@ -51,21 +56,15 @@ public sealed class MoneyOrderApplicationService
 
 		return _repository.UpdateAsync(snapshot =>
 		{
-			var staff = snapshot.Staff.SingleOrDefault(
-				person => string.Equals(
-					person.Id, staffId, StringComparison.Ordinal));
-			if (staff is not { IsActive: true, Role: StaffRole.BranchManager })
-			{
-				throw new UnauthorizedAccessException(
-					"An active Branch Manager is required to process a money order.");
-			}
+			var staff = FindActiveBranchManager(snapshot, staffId);
 
 			var moneyOrder = new MoneyOrder(
 				new Money(amount, _highValueThreshold.Currency),
 				sender,
 				recipient,
 				new Money(fee, _highValueThreshold.Currency),
-				verification);
+				verification,
+				staff.HomeBranchCode);
 			_verificationRule.EnsureVerification(moneyOrder, verification);
 
 			if (verification is { IsSuccessful: false })
@@ -86,5 +85,29 @@ public sealed class MoneyOrderApplicationService
 				updatedVerifications,
 				snapshot.TransactionBaskets);
 		}, cancellationToken);
+	}
+
+	private static Staff FindActiveBranchManager(
+		ApexPostSnapshot snapshot,
+		string staffId)
+	{
+		if (string.IsNullOrWhiteSpace(staffId))
+			throw new UnauthorizedAccessException(
+				"An active Branch Manager is required to access money orders.");
+
+		var matches = snapshot.Staff
+			.Where(person => string.Equals(
+				person.Id, staffId, StringComparison.Ordinal))
+			.Take(2)
+			.ToArray();
+		if (matches.Length != 1 ||
+			!matches[0].IsActive ||
+			matches[0].Role != StaffRole.BranchManager)
+		{
+			throw new UnauthorizedAccessException(
+				"An active Branch Manager is required to access money orders.");
+		}
+
+		return matches[0];
 	}
 }

@@ -8,13 +8,15 @@ public sealed class MoneyOrder
 	public string Recipient { get; }
 	public Money Fee { get; }
 	public IdentityVerification? IdentityVerification { get; }
+	public BranchCode? ProcessingBranchCode { get; }
 
 	public MoneyOrder(
 		Money amount,
 		string sender,
 		string recipient,
 		Money fee,
-		IdentityVerification? identityVerification = null)
+		IdentityVerification? identityVerification = null,
+		BranchCode? processingBranchCode = null)
 	{
 		ArgumentNullException.ThrowIfNull(amount);
 		ArgumentNullException.ThrowIfNull(fee);
@@ -41,5 +43,6 @@ public sealed class MoneyOrder
 		Recipient = recipient.Trim();
 		Fee = fee;
 		IdentityVerification = identityVerification;
+		ProcessingBranchCode = processingBranchCode;
 	}
 }

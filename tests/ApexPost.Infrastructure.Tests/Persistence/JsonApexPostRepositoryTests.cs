@@ -60,7 +60,8 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			"Passport",
 			FullDocumentIdentifier,
 			true);
-		var moneyOrder = CreateMoneyOrder(verification);
+		var moneyOrder = CreateMoneyOrder(
+			verification, new BranchCode("DEL01"));
 		var paidBasket = CreateBasket(product);
 		paidBasket.Pay();
 		var voidedBasket = CreateBasket(product);
@@ -119,6 +120,8 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 		Assert.Equal("Sender", loadedMoneyOrder.Sender);
 		Assert.Equal("Recipient", loadedMoneyOrder.Recipient);
 		Assert.Equal(new Money(5m, "INR"), loadedMoneyOrder.Fee);
+		Assert.Equal(
+			new BranchCode("DEL01"), loadedMoneyOrder.ProcessingBranchCode);
 		var loadedVerification = Assert.Single(loaded.IdentityVerifications);
 		Assert.Equal(verification, loadedMoneyOrder.IdentityVerification);
 		Assert.Equal("Passport", loadedVerification.DocumentType);
@@ -174,6 +177,29 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			"Duplicate entry",
 			Assert.IsType<TransactionVoidedNotification>(
 				Assert.Single(loaded.TransactionBaskets[2].Notifications)).Reason);
+	}
+
+	[Fact]
+	public async Task LoadAsync_WhenVersionFourMoneyOrderHasNoBranch_LeavesBranchUnknown()
+	{
+		using var repository = CreateRepository();
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [CreateMoneyOrder()], [], []));
+
+		var document = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		document["schemaVersion"] = 4;
+		document["moneyOrders"]![0]!.AsObject()
+			.Remove("processingBranchCode");
+		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
+
+		var loadedOrder = Assert.Single((await repository.LoadAsync()).MoneyOrders);
+
+		Assert.Null(loadedOrder.ProcessingBranchCode);
+		Assert.Equal(
+			4,
+			JsonNode.Parse(await File.ReadAllTextAsync(DataFilePath))!
+				["schemaVersion"]!.GetValue<int>());
 	}
 
 	[Fact]
@@ -638,11 +664,13 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			new Money(2m, "INR"));
 
 	private static MoneyOrder CreateMoneyOrder(
-		IdentityVerification? identityVerification = null) =>
+		IdentityVerification? identityVerification = null,
+		BranchCode? processingBranchCode = null) =>
 		new(
 			new Money(100m, "INR"),
 			"Sender",
 			"Recipient",
 			new Money(5m, "INR"),
-			identityVerification);
+			identityVerification,
+			processingBranchCode);
 }

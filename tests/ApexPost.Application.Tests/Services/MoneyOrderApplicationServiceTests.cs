@@ -17,8 +17,60 @@ public sealed class MoneyOrderApplicationServiceTests
 		var snapshot = await repository.LoadAsync();
 		var order = Assert.Single(snapshot.MoneyOrders);
 		Assert.Equal(new Money(500m, "INR"), order.Amount);
+		Assert.Equal(new BranchCode("BR01"), order.ProcessingBranchCode);
 		Assert.Null(order.IdentityVerification);
 		Assert.Empty(snapshot.IdentityVerifications);
+	}
+
+	[Fact]
+	public async Task GetMoneyOrdersAsync_ReturnsOnlyKnownOrdersForManagersHomeBranch()
+	{
+		var manager = CreateStaff(
+			"manager-1", StaffRole.BranchManager, "BR01");
+		var otherBranchOrder = new MoneyOrder(
+			new Money(200m, "INR"), "Other sender", "Recipient",
+			new Money(10m, "INR"), processingBranchCode: new BranchCode("BR02"));
+		var ownBranchOrder = new MoneyOrder(
+			new Money(300m, "INR"), "Local sender", "Recipient",
+			new Money(10m, "INR"), processingBranchCode: new BranchCode("BR01"));
+		var unknownBranchOrder = new MoneyOrder(
+			new Money(400m, "INR"), "Legacy sender", "Recipient",
+			new Money(10m, "INR"));
+		var repository = new InMemoryApexPostRepository(
+			CreateSnapshot(
+				[manager, CreateStaff(
+					"manager-2", StaffRole.BranchManager, "BR02")],
+				[ownBranchOrder, otherBranchOrder, unknownBranchOrder]));
+		var service = new MoneyOrderApplicationService(repository, Threshold);
+
+		var orders = await service.GetMoneyOrdersAsync("manager-1");
+
+		Assert.Equal([ownBranchOrder], orders);
+	}
+
+	[Fact]
+	public async Task GetMoneyOrdersAsync_RejectsInactiveStaff()
+	{
+		var inactiveManager = CreateStaff(
+			"manager-1", StaffRole.BranchManager, "BR01");
+		inactiveManager.Deactivate();
+		var service = new MoneyOrderApplicationService(
+			new InMemoryApexPostRepository(CreateSnapshot([inactiveManager])),
+			Threshold);
+
+		await Assert.ThrowsAsync<UnauthorizedAccessException>(
+			() => service.GetMoneyOrdersAsync("manager-1"));
+	}
+
+	[Fact]
+	public async Task GetMoneyOrdersAsync_RejectsNonManagerStaff()
+	{
+		var service = new MoneyOrderApplicationService(
+			new InMemoryApexPostRepository(CreateSnapshot()),
+			Threshold);
+
+		await Assert.ThrowsAsync<UnauthorizedAccessException>(
+			() => service.GetMoneyOrdersAsync("clerk-1"));
 	}
 
 	[Fact]
@@ -40,6 +92,7 @@ public sealed class MoneyOrderApplicationServiceTests
 		Assert.Same(verification, orderVerification);
 		Assert.Equal("****1234", orderVerification.MaskedDocumentIdentifier);
 		Assert.Equal(verification, Assert.Single(snapshot.IdentityVerifications));
+		Assert.Equal(new BranchCode("BR01"), order.ProcessingBranchCode);
 	}
 
 	[Fact]
@@ -87,6 +140,23 @@ public sealed class MoneyOrderApplicationServiceTests
 	}
 
 	[Fact]
+	public async Task CreateAndProcessAsync_RejectsInactiveBranchManager()
+	{
+		var inactiveManager = CreateStaff(
+			"manager-1", StaffRole.BranchManager, "BR01");
+		inactiveManager.Deactivate();
+		var repository = new InMemoryApexPostRepository(
+			CreateSnapshot([inactiveManager]));
+		var service = new MoneyOrderApplicationService(repository, Threshold);
+
+		await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+			service.CreateAndProcessAsync(
+				"manager-1", 500m, "Sender", "Recipient", 10m, null));
+
+		Assert.Empty((await repository.LoadAsync()).MoneyOrders);
+	}
+
+	[Fact]
 	public async Task CreateAndProcessAsync_InvalidAmountDoesNotPersist()
 	{
 		var repository = new InMemoryApexPostRepository(CreateSnapshot());
@@ -112,9 +182,12 @@ public sealed class MoneyOrderApplicationServiceTests
 		Assert.Empty((await repository.LoadAsync()).MoneyOrders);
 	}
 
-	private static ApexPostSnapshot CreateSnapshot() =>
+	private static ApexPostSnapshot CreateSnapshot(
+		IEnumerable<Staff>? staff = null,
+		IEnumerable<MoneyOrder>? moneyOrders = null) =>
 		new(
 			[],
+			staff ??
 			[
 				new Staff(
 					"manager-1",
@@ -133,9 +206,20 @@ public sealed class MoneyOrderApplicationServiceTests
 			[],
 			[],
 			[],
-			[],
+			moneyOrders ?? [],
 			[],
 			[]);
+
+	private static Staff CreateStaff(
+		string id,
+		StaffRole role,
+		string branchCode) =>
+		new(
+			id,
+			id,
+			$"{id}@example.test",
+			role,
+			new BranchCode(branchCode));
 
 	private sealed class InMemoryApexPostRepository(
 		ApexPostSnapshot initialSnapshot) : IApexPostRepository

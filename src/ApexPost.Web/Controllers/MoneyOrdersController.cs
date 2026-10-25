@@ -15,7 +15,21 @@ public sealed class MoneyOrdersController(
 				StatusCodes.Status503ServiceUnavailable,
 				"Money-order high-value threshold is not configured.");
 
-		var orders = await moneyOrders.GetMoneyOrdersAsync(cancellationToken);
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
+		IReadOnlyList<MoneyOrder> orders;
+		try
+		{
+			orders = await moneyOrders.GetMoneyOrdersAsync(
+				staffId, cancellationToken);
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
+		}
+
 		return View(orders.Select(order => new MoneyOrderListItemViewModel(
 			order.Amount.Amount,
 			order.Amount.Currency,

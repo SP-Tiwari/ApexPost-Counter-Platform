@@ -81,6 +81,7 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 		Assert.Equal(
 			expectedMaskedIdentifier,
 			order.IdentityVerification?.MaskedDocumentIdentifier);
+		Assert.Equal(new BranchCode("BR01"), order.ProcessingBranchCode);
 		Assert.Equal(order.IdentityVerification, Assert.Single(snapshot.IdentityVerifications));
 
 		var json = await File.ReadAllTextAsync(
@@ -170,6 +171,40 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 	}
 
 	[Fact]
+	public async Task Index_ShowsOnlyKnownOrdersFromAuthenticatedManagersPersistedBranch()
+	{
+		await SeedOrdersAsync();
+		using var client = CreateClient("BranchManager");
+		client.DefaultRequestHeaders.Add("X-Money-Order-Branch", "BR02");
+
+		var response = await client.GetAsync("/MoneyOrders/Index");
+		var content = await response.Content.ReadAsStringAsync();
+
+		Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+		Assert.Contains("Local Sender", content, StringComparison.Ordinal);
+		Assert.DoesNotContain("Other Branch Sender", content, StringComparison.Ordinal);
+		Assert.DoesNotContain("Legacy Sender", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task Create_SubmittedBranchCannotOverridePersistedManagersHomeBranch()
+	{
+		await SeedManagerAsync();
+		using var client = CreateClient("BranchManager");
+		var token = await GetAntiforgeryTokenAsync(client);
+
+		var response = await client.PostAsync(
+			"/MoneyOrders/Create",
+			CreateForm(500m, false, false, token, "BR02"));
+
+		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+		Assert.Equal(
+			new BranchCode("BR01"),
+			Assert.Single((await LoadSnapshotAsync()).MoneyOrders)
+				.ProcessingBranchCode);
+	}
+
+	[Fact]
 	public async Task Create_LowValueOrderDoesNotRequireIdentityCheck()
 	{
 		await SeedManagerAsync();
@@ -219,6 +254,33 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 				[]));
 	}
 
+	private async Task SeedOrdersAsync()
+	{
+		var repository = _factory.Services
+			.GetRequiredService<IApexPostRepository>();
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[],
+			[
+				new Staff(
+					StaffId,
+					"Test Manager",
+					"money-order-manager@example.test",
+					StaffRole.BranchManager,
+					new BranchCode("BR01"))
+			],
+			[],
+			[],
+			[],
+			[],
+			[
+				CreateMoneyOrder("Local Sender", "BR01"),
+				CreateMoneyOrder("Other Branch Sender", "BR02"),
+				CreateMoneyOrder("Legacy Sender", null)
+			],
+			[],
+			[]));
+	}
+
 	private async Task<ApexPostSnapshot> LoadSnapshotAsync() =>
 		await _factory.Services.GetRequiredService<IApexPostRepository>()
 			.LoadAsync();
@@ -241,7 +303,8 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 		decimal amount,
 		bool documentCheckedInPerson,
 		bool identityCheckPassed,
-		string? antiforgeryToken = null)
+		string? antiforgeryToken = null,
+		string? branchCode = null)
 	{
 		var values = new List<KeyValuePair<string, string>>
 		{
@@ -261,9 +324,23 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 
 		if (antiforgeryToken is not null)
 			values.Add(new("__RequestVerificationToken", antiforgeryToken));
+		if (branchCode is not null)
+			values.Add(new("BranchCode", branchCode));
 
 		return new FormUrlEncodedContent(values);
 	}
+
+	private static MoneyOrder CreateMoneyOrder(
+		string sender,
+		string? branchCode) =>
+		new(
+			new Money(500m, "INR"),
+			sender,
+			"Recipient",
+			new Money(10m, "INR"),
+			processingBranchCode: branchCode is null
+				? null
+				: new BranchCode(branchCode));
 }
 
 public sealed class MoneyOrderTestAuthenticationHandler(

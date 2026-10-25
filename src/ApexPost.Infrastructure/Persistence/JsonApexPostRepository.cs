@@ -256,6 +256,7 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				Sender = order.Sender,
 				Recipient = order.Recipient,
 				Fee = ToMoney(order.Fee),
+				ProcessingBranchCode = order.ProcessingBranchCode?.Value,
 				IdentityVerification = order.IdentityVerification is null
 					? null
 					: ToPersistedIdentityVerification(
@@ -342,7 +343,10 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 					ToMoney(order.Fee),
 					order.IdentityVerification is null
 						? null
-						: ToIdentityVerification(order.IdentityVerification))),
+						: ToIdentityVerification(order.IdentityVerification),
+					order.ProcessingBranchCode is null
+						? null
+						: new BranchCode(order.ProcessingBranchCode))),
 				document.IdentityVerifications.Select(verification =>
 					ToIdentityVerification(verification)),
 				document.TransactionBaskets.Select(ToBasket));
@@ -616,6 +620,7 @@ internal sealed class PersistedMoneyOrder
 	public required string Sender { get; set; }
 	public required string Recipient { get; set; }
 	public required PersistedMoney Fee { get; set; }
+	public string? ProcessingBranchCode { get; set; }
 	public PersistedIdentityVerification? IdentityVerification { get; set; }
 }
 
