@@ -30,10 +30,11 @@ Production operators must explicitly provide business configuration as applicabl
 - `Shipping:TaxCategory`
 - `Shipping:MaximumParcelWeightKilograms:<ShippingServiceLevel>`
 - shipping rates in the JSON snapshot, per destination zone and service level
+- `Reports:LowStockThreshold`
 - both `MoneyOrders:HighValueThreshold:Amount` and `MoneyOrders:HighValueThreshold:Currency`
 - partner API key and protected-IP configuration, supplied outside source control
 
-No production prices, tax rates, parcel limits, or money-order thresholds are supplied as defaults. Missing required settings fail closed for the affected workflow.
+No production prices, tax rates, parcel limits, money-order thresholds, or low-stock thresholds are supplied as defaults. Missing required settings fail closed for the affected workflow.
 
 Partner integration prefixes are opt-in through `ApiSecurity:ProtectedPathPrefixes`. When any are configured, set positive `ApiSecurity:PartnerRateLimit:PermitLimit` and `ApiSecurity:PartnerRateLimit:WindowSeconds` values; startup rejects missing or invalid limits. Requests must first pass the existing API-key and IP checks, then share a fixed-window bucket keyed by the SHA-256 digest of the validated API key. The current configuration supports one shared API key, so it provides one partner bucket rather than separate buckets for distinct partners. Client-supplied partner identity headers are ignored. `ParcelTracking:AllowedOrigins` is an exact-origin array; it defaults to empty (no cross-origin access) and must be populated by deployment configuration with the approved HTTP or HTTPS origin. Wildcards and credentialed CORS are not supported.
 

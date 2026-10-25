@@ -139,6 +139,30 @@ builder.Services.AddScoped<StaffCookieAuthenticationEvents>();
 builder.Services.AddScoped<AuditActionFilter>();
 builder.Services.AddScoped<ValidationActionFilter>();
 
+var lowStockThresholdValue =
+	builder.Configuration["Reports:LowStockThreshold"];
+int? lowStockThreshold = null;
+if (lowStockThresholdValue is not null)
+{
+	if (!int.TryParse(
+		lowStockThresholdValue,
+		NumberStyles.Integer,
+		CultureInfo.InvariantCulture,
+		out var configuredLowStockThreshold) ||
+		configuredLowStockThreshold < 0)
+	{
+		throw new InvalidOperationException(
+			"Reports:LowStockThreshold must be a non-negative integer.");
+	}
+
+	lowStockThreshold = configuredLowStockThreshold;
+}
+
+builder.Services.AddScoped<LowStockReportApplicationService>(services =>
+	new LowStockReportApplicationService(
+		services.GetRequiredService<IApexPostRepository>(),
+		lowStockThreshold));
+
 var slowActionThresholdMilliseconds = builder.Configuration.GetValue<double>(
 	"Performance:SlowActionThresholdMilliseconds", 500d);
 var slowActionThreshold = PerformanceActionFilter.ParseThresholdMilliseconds(

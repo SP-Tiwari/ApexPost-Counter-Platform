@@ -40,6 +40,9 @@
                             <li class="nav-item">
                                 <a class="nav-link text-dark" asp-controller="MoneyOrders" asp-action="Index">Money orders</a>
                             </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-controller="Reports" asp-action="LowStock">Low-stock report</a>
+                            </li>
                         }
                     </ul>
                     @if (User.Identity?.IsAuthenticated == true)
