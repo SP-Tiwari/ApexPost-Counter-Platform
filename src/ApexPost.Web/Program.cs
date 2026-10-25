@@ -164,6 +164,8 @@ builder.Services.AddScoped<LowStockReportApplicationService>(services =>
 		services.GetRequiredService<IApexPostRepository>(),
 		lowStockThreshold));
 builder.Services.AddScoped<ShippingVolumeReportApplicationService>();
+builder.Services.AddScoped<BranchAuditorReportApplicationService>();
+builder.Services.AddScoped<DailyBranchSalesReportApplicationService>();
 
 var slowActionThresholdMilliseconds = builder.Configuration.GetValue<double>(
 	"Performance:SlowActionThresholdMilliseconds", 500d);
