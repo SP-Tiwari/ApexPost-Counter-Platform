@@ -1,6 +1,8 @@
 using ApexPost.Application.Services;
+using ApexPost.Application.Persistence;
 using ApexPost.Domain.Enums;
 using ApexPost.Domain.Notifications;
+using ApexPost.Domain.ValueObjects;
 using ApexPost.Web.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -12,11 +14,16 @@ namespace ApexPost.Web.Controllers;
 public sealed class TransactionsController : Controller
 {
 	private readonly TransactionApplicationService _transactions;
+	private readonly MixedBasketApplicationService _mixedBaskets;
 
-	public TransactionsController(TransactionApplicationService transactions)
+	public TransactionsController(
+		TransactionApplicationService transactions,
+		MixedBasketApplicationService mixedBaskets)
 	{
 		ArgumentNullException.ThrowIfNull(transactions);
+		ArgumentNullException.ThrowIfNull(mixedBaskets);
 		_transactions = transactions;
+		_mixedBaskets = mixedBaskets;
 	}
 
 	[HttpGet]
@@ -29,9 +36,177 @@ public sealed class TransactionsController : Controller
 				basket.Id,
 				basket.PaymentStatus,
 				basket.Total.Amount,
-				basket.Currency))
+				basket.Currency,
+				basket.BranchCode?.Value))
 			.ToArray();
 		return View(model);
+	}
+
+	[HttpGet("Create")]
+	public async Task<IActionResult> Create(
+		CancellationToken cancellationToken)
+	{
+		var model = await BuildCreateViewModelAsync(
+			new CreateTransactionViewModel
+			{
+				TransactionId = Guid.NewGuid()
+			},
+			cancellationToken);
+		return View(model);
+	}
+
+	[HttpPost("Create")]
+	[ValidateAntiForgeryToken]
+	public async Task<IActionResult> Create(
+		CreateTransactionViewModel model,
+		CancellationToken cancellationToken)
+	{
+		if (model.TransactionId == Guid.Empty)
+			ModelState.AddModelError(
+				nameof(model.TransactionId), "A transaction ID is required.");
+
+		var hasGoods = !string.IsNullOrWhiteSpace(model.GoodsSku);
+		if (hasGoods && model.GoodsQuantity is not > 0)
+			ModelState.AddModelError(
+				nameof(model.GoodsQuantity),
+				"Goods quantity must be greater than zero.");
+		if (!hasGoods && model.GoodsQuantity.HasValue)
+			ModelState.AddModelError(
+				nameof(model.GoodsSku),
+				"Select a product when specifying a goods quantity.");
+
+		ShippingBasketRequest? shippingRequest = null;
+		if (model.IncludeShipping)
+		{
+			if (model.ShippingType is null ||
+				!Enum.IsDefined(model.ShippingType.Value))
+				ModelState.AddModelError(
+					nameof(model.ShippingType), "Select a valid shipping type.");
+			if (model.ServiceLevel is null ||
+				!Enum.IsDefined(model.ServiceLevel.Value))
+				ModelState.AddModelError(
+					nameof(model.ServiceLevel), "Select a valid service level.");
+			if (string.IsNullOrWhiteSpace(model.DestinationZone))
+				ModelState.AddModelError(
+					nameof(model.DestinationZone),
+					"Select a destination zone.");
+			if (model.WeightKilograms is not > 0m)
+				ModelState.AddModelError(
+					nameof(model.WeightKilograms),
+					"Weight must be greater than zero.");
+			if (model.LengthCm is not > 0m)
+				ModelState.AddModelError(
+					nameof(model.LengthCm),
+					"Length must be greater than zero.");
+			if (model.WidthCm is not > 0m)
+				ModelState.AddModelError(
+					nameof(model.WidthCm),
+					"Width must be greater than zero.");
+			if (model.HeightCm is not > 0m)
+				ModelState.AddModelError(
+					nameof(model.HeightCm),
+					"Height must be greater than zero.");
+
+			if (ModelState.IsValid)
+			{
+				shippingRequest = new ShippingBasketRequest(
+					model.ShippingType!.Value,
+					model.WeightKilograms!.Value,
+					model.LengthCm!.Value,
+					model.WidthCm!.Value,
+					model.HeightCm!.Value,
+					model.DestinationZone!,
+					model.ServiceLevel!.Value);
+			}
+		}
+
+		if (!hasGoods && !model.IncludeShipping)
+			ModelState.AddModelError(
+				string.Empty,
+				"Add at least one goods item or shipping service.");
+
+		if (!_mixedBaskets.HasTaxRates)
+			ModelState.AddModelError(
+				string.Empty,
+				"Configure transaction tax rates before processing transactions.");
+
+		if (!ModelState.IsValid)
+		{
+			Response.StatusCode = StatusCodes.Status400BadRequest;
+			return View(await BuildCreateViewModelAsync(
+				model, cancellationToken));
+		}
+
+		BranchCode branchCode;
+		try
+		{
+			branchCode = new BranchCode(model.BranchCode);
+		}
+		catch (ArgumentException)
+		{
+			ModelState.AddModelError(
+				nameof(model.BranchCode), "Select a valid branch.");
+			Response.StatusCode = StatusCodes.Status400BadRequest;
+			return View(await BuildCreateViewModelAsync(
+				model, cancellationToken));
+		}
+
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
+		try
+		{
+			var goods = hasGoods
+				? new[]
+				{
+					new GoodsBasketRequest(
+						model.GoodsSku!,
+						model.GoodsQuantity!.Value)
+				}
+				: [];
+			IReadOnlyList<ShippingBasketRequest> shipments = shippingRequest is null
+				? []
+				: [shippingRequest];
+			var transactionId =
+				await _mixedBaskets.CreateAndProcessAsync(
+					model.TransactionId,
+					staffId,
+					branchCode,
+					goods,
+					shipments,
+					cancellationToken);
+			TempData["TransactionActionStatus"] =
+				"Transaction processed.";
+			return RedirectToAction(
+				nameof(Details), new { transactionId });
+		}
+		catch (KeyNotFoundException)
+		{
+			return NotFound();
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
+		}
+		catch (ArgumentException)
+		{
+			ModelState.AddModelError(
+				string.Empty,
+				"One or more transaction values are invalid.");
+			Response.StatusCode = StatusCodes.Status400BadRequest;
+			return View(await BuildCreateViewModelAsync(
+				model, cancellationToken));
+		}
+		catch (InvalidOperationException)
+		{
+			ModelState.AddModelError(
+				string.Empty,
+				"The transaction could not be processed. Check configured rates, weight limits, stock, and submission status.");
+			Response.StatusCode = StatusCodes.Status409Conflict;
+			return View(await BuildCreateViewModelAsync(
+				model, cancellationToken));
+		}
 	}
 
 	[HttpGet("{transactionId:guid}")]
@@ -166,13 +341,22 @@ public sealed class TransactionsController : Controller
 			basket.Tax.Amount,
 			basket.Total.Amount,
 			basket.Currency,
+			basket.BranchCode?.Value,
 			basket.LineItems.Select(item => new TransactionLineViewModel(
 				item.Description,
 				item.Type,
 				item.UnitPrice.Amount,
 				item.Quantity,
 				item.Subtotal.Amount,
-				item.UnitPrice.Currency)).ToArray(),
+				item.UnitPrice.Currency,
+				item.ShippingItem is null
+					? null
+					: $"{item.ShippingItem.Type}; {item.ShippingItem.Weight.Kilograms} kg; " +
+						$"{item.ShippingItem.Dimensions.LengthCm} x " +
+						$"{item.ShippingItem.Dimensions.WidthCm} x " +
+						$"{item.ShippingItem.Dimensions.HeightCm} cm; " +
+						$"{item.ShippingItem.DestinationZone}; " +
+						$"{item.ShippingItem.ServiceLevel}")).ToArray(),
 			basket.Notifications.Select(notification =>
 				new TransactionNotificationViewModel(
 					notification switch
@@ -187,5 +371,19 @@ public sealed class TransactionsController : Controller
 						TransactionRefundedNotification refunded => refunded.Reason,
 						_ => string.Empty
 					})).ToArray());
+	}
+
+	private async Task<CreateTransactionViewModel> BuildCreateViewModelAsync(
+		CreateTransactionViewModel model,
+		CancellationToken cancellationToken)
+	{
+		var catalog = await _mixedBaskets.GetCatalogAsync(cancellationToken);
+		model.Products = catalog.Products;
+		model.Branches = catalog.Branches;
+		model.ShippingRates = catalog.ShippingRates;
+		model.CanSubmit = _mixedBaskets.HasTaxRates &&
+			catalog.Branches.Count > 0 &&
+			(catalog.Products.Count > 0 || catalog.ShippingRates.Count > 0);
+		return model;
 	}
 }

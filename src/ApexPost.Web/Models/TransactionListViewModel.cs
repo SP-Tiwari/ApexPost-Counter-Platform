@@ -6,4 +6,5 @@ public sealed record TransactionListViewModel(
 	Guid Id,
 	TransactionPaymentStatus PaymentStatus,
 	decimal Total,
-	string Currency);
+	string Currency,
+	string? BranchCode);

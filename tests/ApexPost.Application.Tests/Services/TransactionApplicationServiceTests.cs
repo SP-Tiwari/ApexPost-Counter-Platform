@@ -42,6 +42,210 @@ public sealed class TransactionApplicationServiceTests
 	}
 
 	[Fact]
+	public async Task MixedBasket_PricingStockAndBranchAttributionArePersistedAtomically()
+	{
+		var repository = CreateMixedBasketRepository();
+		var service = CreateMixedBasketService(repository);
+		var transactionId = Guid.NewGuid();
+
+		await service.CreateAndProcessAsync(
+			transactionId,
+			"manager-1",
+			BranchOne,
+			[new GoodsBasketRequest(ProductSku.Value, 2)],
+			[CreateShippingRequest()]);
+
+		var snapshot = await repository.LoadAsync();
+		var basket = Assert.Single(snapshot.TransactionBaskets);
+		Assert.Equal(transactionId, basket.Id);
+		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Equal(BranchOne, basket.BranchCode);
+		Assert.Equal(new Money(56m, "INR"), basket.Subtotal);
+		Assert.Equal(new Money(5.6m, "INR"), basket.Tax);
+		Assert.Equal(new Money(61.6m, "INR"), basket.Total);
+		Assert.Equal(2, Assert.Single(snapshot.BranchStocks).Quantity);
+		Assert.Equal(2, basket.LineItems.Count);
+		Assert.Equal(
+			new Money(16m, "INR"),
+			basket.LineItems[1].UnitPrice);
+		Assert.Equal(
+			Assert.Single(snapshot.ShippingItems),
+			basket.LineItems[1].ShippingItem);
+	}
+
+	[Fact]
+	public async Task MixedBasket_ParcelOverConfiguredWeightDoesNotPersistOrDeductStock()
+	{
+		var repository = CreateMixedBasketRepository();
+		var service = CreateMixedBasketService(repository);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				Guid.NewGuid(),
+				"manager-1",
+				BranchOne,
+				[new GoodsBasketRequest(ProductSku.Value, 2)],
+				[CreateShippingRequest(weightKilograms: 6m)]));
+
+		var snapshot = await repository.LoadAsync();
+		Assert.Empty(snapshot.TransactionBaskets);
+		Assert.Equal(4, Assert.Single(snapshot.BranchStocks).Quantity);
+		Assert.Empty(snapshot.ShippingItems);
+	}
+
+	[Fact]
+	public async Task MixedBasket_InsufficientStockDoesNotPersistTransaction()
+	{
+		var repository = CreateMixedBasketRepository();
+		var service = CreateMixedBasketService(repository);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				Guid.NewGuid(),
+				"manager-1",
+				BranchOne,
+				[new GoodsBasketRequest(ProductSku.Value, 5)],
+				[CreateShippingRequest()]));
+
+		var snapshot = await repository.LoadAsync();
+		Assert.Empty(snapshot.TransactionBaskets);
+		Assert.Equal(4, Assert.Single(snapshot.BranchStocks).Quantity);
+		Assert.Empty(snapshot.ShippingItems);
+	}
+
+	[Fact]
+	public async Task MixedBasket_RejectsDifferentCurrenciesBeforePersistence()
+	{
+		var repository = CreateMixedBasketRepository(
+			new ShippingRate(
+				"ZONE-A",
+				ShippingServiceLevel.Standard,
+				new Money(10m, "USD"),
+				new Money(2m, "USD")));
+		var service = CreateMixedBasketService(repository);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				Guid.NewGuid(),
+				"manager-1",
+				BranchOne,
+				[new GoodsBasketRequest(ProductSku.Value, 1)],
+				[CreateShippingRequest()]));
+
+		Assert.Empty((await repository.LoadAsync()).TransactionBaskets);
+	}
+
+	[Fact]
+	public async Task MixedBasket_LetterDoesNotRequireParcelWeightConfiguration()
+	{
+		var repository = CreateMixedBasketRepository();
+		var service = CreateMixedBasketService(
+			repository, new Dictionary<ShippingServiceLevel, Weight>());
+
+		await service.CreateAndProcessAsync(
+			Guid.NewGuid(),
+			"manager-1",
+			BranchOne,
+			[],
+			[CreateShippingRequest(ShippingItemType.Letter)]);
+
+		var snapshot = await repository.LoadAsync();
+		Assert.Equal(TransactionPaymentStatus.Paid,
+			Assert.Single(snapshot.TransactionBaskets).PaymentStatus);
+		Assert.Equal(
+			ShippingItemType.Letter,
+			Assert.Single(snapshot.ShippingItems).Type);
+	}
+
+	[Fact]
+	public async Task MixedBasket_ParcelRequiresConfiguredServiceWeightLimit()
+	{
+		var repository = CreateMixedBasketRepository();
+		var service = CreateMixedBasketService(
+			repository, new Dictionary<ShippingServiceLevel, Weight>());
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				Guid.NewGuid(),
+				"manager-1",
+				BranchOne,
+				[],
+				[CreateShippingRequest()]));
+
+		Assert.Empty((await repository.LoadAsync()).TransactionBaskets);
+	}
+
+	[Fact]
+	public void MixedBasket_RejectsNegativeTaxConfiguration()
+	{
+		var repository = CreateMixedBasketRepository();
+
+		Assert.Throws<ArgumentOutOfRangeException>(() =>
+			new MixedBasketApplicationService(
+				repository,
+				new Dictionary<TaxCategory, decimal>
+				{
+					[TaxCategory.Standard] = -0.1m
+				},
+				new Dictionary<ShippingServiceLevel, Weight>(),
+				TaxCategory.Standard));
+	}
+
+	[Fact]
+	public async Task MixedBasket_RepeatedTransactionIdCannotProcessOrDeductTwice()
+	{
+		var repository = CreateMixedBasketRepository();
+		var service = CreateMixedBasketService(repository);
+		var transactionId = Guid.NewGuid();
+
+		await service.CreateAndProcessAsync(
+			transactionId,
+			"manager-1",
+			BranchOne,
+			[new GoodsBasketRequest(ProductSku.Value, 2)],
+			[CreateShippingRequest()]);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				transactionId,
+				"manager-1",
+				BranchOne,
+				[new GoodsBasketRequest(ProductSku.Value, 2)],
+				[CreateShippingRequest()]));
+
+		var snapshot = await repository.LoadAsync();
+		Assert.Single(snapshot.TransactionBaskets);
+		Assert.Equal(2, Assert.Single(snapshot.BranchStocks).Quantity);
+		Assert.Single(snapshot.ShippingItems);
+	}
+
+	[Fact]
+	public async Task MixedBasket_RejectsUnauthorizedStaffAndMissingRate()
+	{
+		var repository = CreateMixedBasketRepository();
+		var service = CreateMixedBasketService(repository);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				Guid.NewGuid(),
+				"clerk-1",
+				BranchTwo,
+				[new GoodsBasketRequest(ProductSku.Value, 1)],
+				[]));
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				Guid.NewGuid(),
+				"manager-1",
+				BranchOne,
+				[],
+				[CreateShippingRequest(
+					serviceLevel: ShippingServiceLevel.Express)]));
+
+		Assert.Empty((await repository.LoadAsync()).TransactionBaskets);
+	}
+
+	[Fact]
 	public async Task ProcessSaleAsync_UsesDomainRulesAndPersistsStockDeduction()
 	{
 		var repository = new InMemoryApexPostRepository(CreateSnapshot());
@@ -161,6 +365,55 @@ public sealed class TransactionApplicationServiceTests
 	{
 		[TaxCategory.Standard] = 0m
 	};
+
+	private static InMemoryApexPostRepository CreateMixedBasketRepository(
+		ShippingRate? shippingRate = null)
+	{
+		var snapshot = CreateSnapshot();
+		return new InMemoryApexPostRepository(new ApexPostSnapshot(
+			snapshot.Branches,
+			snapshot.Staff,
+			snapshot.Products,
+			snapshot.BranchStocks,
+			[],
+			[shippingRate ?? new ShippingRate(
+				"ZONE-A",
+				ShippingServiceLevel.Standard,
+				new Money(10m, "INR"),
+				new Money(2m, "INR"))],
+			[],
+			[],
+			[]));
+	}
+
+	private static MixedBasketApplicationService CreateMixedBasketService(
+		InMemoryApexPostRepository repository,
+		IReadOnlyDictionary<ShippingServiceLevel, Weight>? maximumWeights = null) =>
+		new(
+			repository,
+			new Dictionary<TaxCategory, decimal>
+			{
+				[TaxCategory.Standard] = 0.1m
+			},
+			maximumWeights ??
+				new Dictionary<ShippingServiceLevel, Weight>
+				{
+					[ShippingServiceLevel.Standard] = new Weight(5m)
+				},
+			TaxCategory.Standard);
+
+	private static ShippingBasketRequest CreateShippingRequest(
+		ShippingItemType type = ShippingItemType.Parcel,
+		decimal weightKilograms = 3m,
+		ShippingServiceLevel serviceLevel = ShippingServiceLevel.Standard) =>
+		new(
+			type,
+			weightKilograms,
+			10m,
+			20m,
+			30m,
+			"ZONE-A",
+			serviceLevel);
 
 	private static ApexPostSnapshot CreateSnapshot()
 	{
@@ -303,7 +556,8 @@ public sealed class TransactionApplicationServiceTests
 					state.TaxRates,
 					state.LineItems,
 					state.PaymentStatus,
-					state.Notifications);
+					state.Notifications,
+					state.BranchCode);
 			});
 
 			return new ApexPostSnapshot(

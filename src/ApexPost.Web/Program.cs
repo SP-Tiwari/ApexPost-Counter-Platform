@@ -3,6 +3,7 @@ using ApexPost.Application.Persistence;
 using ApexPost.Application.Auditing;
 using ApexPost.Application.Security;
 using ApexPost.Application.Services;
+using ApexPost.Domain.Enums;
 using ApexPost.Domain.ValueObjects;
 using ApexPost.Infrastructure.Persistence;
 using ApexPost.Web.Authentication;
@@ -131,6 +132,75 @@ builder.Services.AddScoped<MoneyOrderApplicationService>(services =>
 	new MoneyOrderApplicationService(
 		services.GetRequiredService<IApexPostRepository>(),
 		moneyOrderHighValueThreshold));
+
+var configuredTaxRates = new Dictionary<TaxCategory, decimal>();
+foreach (var taxCategory in Enum.GetValues<TaxCategory>())
+{
+	var configuredRate = builder.Configuration[
+		$"Transactions:TaxRates:{taxCategory}"];
+	if (configuredRate is null)
+		continue;
+	if (!decimal.TryParse(
+		configuredRate,
+		NumberStyles.Number,
+		CultureInfo.InvariantCulture,
+		out var taxRate) ||
+		taxRate < 0m)
+	{
+		throw new InvalidOperationException(
+			$"Transactions:TaxRates:{taxCategory} must be a non-negative decimal.");
+	}
+
+	configuredTaxRates.Add(taxCategory, taxRate);
+}
+
+var configuredMaximumParcelWeights =
+	new Dictionary<ShippingServiceLevel, Weight>();
+foreach (var serviceLevel in Enum.GetValues<ShippingServiceLevel>())
+{
+	var configuredWeight = builder.Configuration[
+		$"Shipping:MaximumParcelWeightKilograms:{serviceLevel}"];
+	if (configuredWeight is null)
+		continue;
+	if (!decimal.TryParse(
+		configuredWeight,
+		NumberStyles.Number,
+		CultureInfo.InvariantCulture,
+		out var kilograms) ||
+		kilograms <= 0m)
+	{
+		throw new InvalidOperationException(
+			$"Shipping:MaximumParcelWeightKilograms:{serviceLevel} must be a positive decimal.");
+	}
+
+	configuredMaximumParcelWeights.Add(
+		serviceLevel, new Weight(kilograms));
+}
+
+TaxCategory? configuredShippingTaxCategory = null;
+var configuredShippingTaxCategoryValue =
+	builder.Configuration["Shipping:TaxCategory"];
+if (configuredShippingTaxCategoryValue is not null)
+{
+	if (!Enum.TryParse<TaxCategory>(
+		configuredShippingTaxCategoryValue,
+		ignoreCase: true,
+		out var shippingTaxCategory) ||
+		!Enum.IsDefined(shippingTaxCategory))
+	{
+		throw new InvalidOperationException(
+			"Shipping:TaxCategory must name a defined tax category.");
+	}
+
+	configuredShippingTaxCategory = shippingTaxCategory;
+}
+
+builder.Services.AddScoped<MixedBasketApplicationService>(services =>
+	new MixedBasketApplicationService(
+		services.GetRequiredService<IApexPostRepository>(),
+		configuredTaxRates,
+		configuredMaximumParcelWeights,
+		configuredShippingTaxCategory));
 
 var auditFile = builder.Configuration["Audit:FilePath"];
 

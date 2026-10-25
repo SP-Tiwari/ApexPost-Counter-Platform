@@ -11,6 +11,7 @@ public sealed class TransactionLineItem
 	public int Quantity { get; }
 	public TaxCategory TaxCategory { get; }
 	public Sku? ProductSku { get; }
+	public ShippingItem? ShippingItem { get; }
 
 	public TransactionLineItem(
 		string description,
@@ -18,7 +19,7 @@ public sealed class TransactionLineItem
 		Money unitPrice,
 		int quantity,
 		TaxCategory taxCategory)
-		: this(description, type, unitPrice, quantity, taxCategory, null)
+		: this(description, type, unitPrice, quantity, taxCategory, null, null)
 	{
 	}
 
@@ -28,7 +29,8 @@ public sealed class TransactionLineItem
 		Money unitPrice,
 		int quantity,
 		TaxCategory taxCategory,
-		Sku? productSku)
+		Sku? productSku,
+		ShippingItem? shippingItem = null)
 	{
 		if (string.IsNullOrWhiteSpace(description))
 			throw new ArgumentException(
@@ -52,6 +54,11 @@ public sealed class TransactionLineItem
 		Quantity = quantity;
 		TaxCategory = taxCategory;
 		ProductSku = productSku;
+		if (shippingItem is not null && type != TransactionItemType.Service)
+			throw new ArgumentException(
+				"Shipping items must be represented by a service line.",
+				nameof(shippingItem));
+		ShippingItem = shippingItem;
 	}
 
 	public TransactionLineItem(Product product, int quantity)
@@ -68,6 +75,7 @@ public sealed class TransactionLineItem
 		Quantity = quantity;
 		TaxCategory = product.TaxCategory;
 		ProductSku = product.Sku;
+		ShippingItem = null;
 	}
 
 	public Money Subtotal =>

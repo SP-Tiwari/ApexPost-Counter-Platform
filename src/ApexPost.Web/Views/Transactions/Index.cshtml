@@ -5,6 +5,12 @@
 
 <h1>Transactions</h1>
 
+<p>
+    <a asp-controller="Transactions"
+       asp-action="Create"
+       class="btn btn-primary">Create transaction</a>
+</p>
+
 @if (Model.Count == 0)
 {
     <p>No transactions have been created.</p>
@@ -17,6 +23,7 @@ else
                 <th scope="col">Transaction ID</th>
                 <th scope="col">Status</th>
                 <th scope="col">Total</th>
+                <th scope="col">Branch</th>
                 <th scope="col"></th>
             </tr>
         </thead>
@@ -27,6 +34,7 @@ else
                     <td>@transaction.Id</td>
                     <td>@transaction.PaymentStatus</td>
                     <td>@transaction.Total @transaction.Currency</td>
+                    <td>@(transaction.BranchCode ?? "Not recorded")</td>
                     <td>
                         <a asp-controller="Transactions"
                            asp-action="Details"

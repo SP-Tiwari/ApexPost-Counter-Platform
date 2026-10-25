@@ -143,3 +143,9 @@ dotnet test ApexPost.slnx
 
 
 The solution includes layered Domain, Application, Infrastructure, and MVC workflows for transactions, money orders, staff authentication, JSON persistence, and request security controls. The README and DESIGN.md document configuration and known limitations. The repository does not seed production data or staff credentials.
+
+### Mixed goods and shipping transactions
+
+Branch Managers can create and process a basket containing goods, shipping, or both from **Transactions → Create transaction**. Processing validates stock and configured shipping rates and parcel limits, calculates tax and total, persists the transaction and shipping item together, and records the processing branch. Successful submissions redirect to transaction details; reusing the submitted transaction ID is rejected to prevent duplicate stock deductions.
+
+The application intentionally supplies no production tax rates, shipping rates, shipping tax category, or parcel weight limits. Deployment configuration must provide applicable `Transactions:TaxRates:<TaxCategory>` values, `Shipping:TaxCategory` for shipping-line tax treatment, and `Shipping:MaximumParcelWeightKilograms:<ShippingServiceLevel>` limits for parcel services. Shipping base and per-kilogram rates are operator-provisioned in the JSON snapshot by destination zone and service level. Missing configuration does not silently fall back to sample business values; shipping choices require configured rates and a configured shipping tax category. See DESIGN.md for details. Transaction branch attribution is persisted, but current transaction visibility remains manager-wide and is not branch-scoped.
