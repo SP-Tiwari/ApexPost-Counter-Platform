@@ -247,7 +247,8 @@ public class TransactionVoidRefundRuleTests
 			new Dictionary<TaxCategory, decimal>
 			{
 				[TaxCategory.Standard] = 0.1m
-			});
+			},
+			new BranchCode("DEL01"));
 		basket.AddLineItem(new TransactionLineItem(
 			"Goods",
 			TransactionItemType.Goods,

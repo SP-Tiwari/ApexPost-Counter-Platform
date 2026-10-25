@@ -51,19 +51,20 @@ public class TransactionProcessingRuleTests
 	}
 
 	[Fact]
-	public void Process_WhenActiveBranchManagerUsesDifferentBranch_PaysBasket()
+	public void Process_WhenBranchManagerUsesDifferentBranch_RejectsWithoutPayingBasket()
 	{
 		var staff = CreateStaff(StaffRole.BranchManager);
 		var basket = CreateBasket();
 		var otherBranch = CreateBranch("MUM01");
 
-		Process(
-			staff,
-			otherBranch,
-			basket,
-			[CreateStock("MUM01", 5)]);
+		Assert.Throws<InvalidOperationException>(() =>
+			Process(
+				staff,
+				otherBranch,
+				basket,
+				[CreateStock("MUM01", 5)]));
 
-		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Equal(TransactionPaymentStatus.Open, basket.PaymentStatus);
 	}
 
 	[Theory]
@@ -190,7 +191,8 @@ public class TransactionProcessingRuleTests
 			new Dictionary<TaxCategory, decimal>
 			{
 				[TaxCategory.Standard] = 0.1m
-			});
+			},
+			new BranchCode("DEL01"));
 
 		if (populate)
 		{

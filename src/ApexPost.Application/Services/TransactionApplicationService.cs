@@ -10,6 +10,7 @@ public sealed class TransactionApplicationService
 {
 	private readonly IApexPostRepository _repository;
 	private readonly TransactionProcessingRule _processingRule = new();
+	private readonly TransactionAccessRule _accessRule = new();
 	private readonly TransactionVoidRefundRule _voidRefundRule = new();
 
 	public TransactionApplicationService(IApexPostRepository repository)
@@ -20,17 +21,21 @@ public sealed class TransactionApplicationService
 
 	public async Task<IReadOnlyList<TransactionBasketSnapshot>>
 		GetTransactionBasketsAsync(
+			string staffId,
 			CancellationToken cancellationToken = default)
 	{
 		var snapshot = await _repository.LoadAsync(cancellationToken)
 			.ConfigureAwait(false);
+		var staff = FindActiveBranchManager(snapshot, staffId);
 		return Array.AsReadOnly(snapshot.TransactionBaskets
+			.Where(basket => _accessRule.CanAccess(staff, basket))
 			.Select(basket => basket.GetSnapshot())
 			.ToArray());
 	}
 
 	public async Task<TransactionBasketSnapshot> GetTransactionBasketAsync(
 		Guid transactionId,
+		string staffId,
 		CancellationToken cancellationToken = default)
 	{
 		if (transactionId == Guid.Empty)
@@ -39,7 +44,12 @@ public sealed class TransactionApplicationService
 
 		var snapshot = await _repository.LoadAsync(cancellationToken)
 			.ConfigureAwait(false);
-		return FindBasket(snapshot, transactionId).GetSnapshot();
+		var staff = FindActiveBranchManager(snapshot, staffId);
+		var basket = FindBasket(snapshot, transactionId);
+		if (!_accessRule.CanAccess(staff, basket))
+			throw new KeyNotFoundException(
+				$"Transaction '{transactionId}' was not found.");
+		return basket.GetSnapshot();
 	}
 
 	public async Task<Guid> CreateBasketAsync(
@@ -114,7 +124,10 @@ public sealed class TransactionApplicationService
 		_repository.UpdateAsync(snapshot =>
 		{
 			var basket = FindBasket(snapshot, transactionId);
-			var staff = FindStaff(snapshot, staffId);
+			var staff = FindActiveBranchManager(snapshot, staffId);
+			if (!_accessRule.CanAccess(staff, basket))
+				throw new KeyNotFoundException(
+					$"Transaction '{transactionId}' was not found.");
 			_voidRefundRule.Void(staff, basket, reason);
 			return snapshot;
 		}, cancellationToken);
@@ -127,7 +140,10 @@ public sealed class TransactionApplicationService
 		_repository.UpdateAsync(snapshot =>
 		{
 			var basket = FindBasket(snapshot, transactionId);
-			var staff = FindStaff(snapshot, staffId);
+			var staff = FindActiveBranchManager(snapshot, staffId);
+			if (!_accessRule.CanAccess(staff, basket))
+				throw new KeyNotFoundException(
+					$"Transaction '{transactionId}' was not found.");
 			_voidRefundRule.Refund(staff, basket, reason);
 			return snapshot;
 		}, cancellationToken);
@@ -156,6 +172,28 @@ public sealed class TransactionApplicationService
 			person => string.Equals(
 				person.Id, staffId, StringComparison.Ordinal),
 			$"Staff '{staffId}'");
+	}
+
+	private static Staff FindActiveBranchManager(
+		ApexPostSnapshot snapshot,
+		string staffId)
+	{
+		if (string.IsNullOrWhiteSpace(staffId))
+			throw new UnauthorizedAccessException(
+				"An active Branch Manager is required.");
+		var matches = snapshot.Staff.Where(person =>
+			string.Equals(
+				person.Id, staffId, StringComparison.Ordinal))
+			.Take(2).ToArray();
+		if (matches.Length != 1 ||
+			!matches[0].IsActive ||
+			matches[0].Role != StaffRole.BranchManager)
+		{
+			throw new UnauthorizedAccessException(
+				"An active Branch Manager is required.");
+		}
+
+		return matches[0];
 	}
 
 	private static T FindExactly<T>(

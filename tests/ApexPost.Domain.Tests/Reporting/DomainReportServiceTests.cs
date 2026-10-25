@@ -200,7 +200,8 @@ public class DomainReportServiceTests
 			new Dictionary<TaxCategory, decimal>
 			{
 				[TaxCategory.Standard] = 0.1m
-			});
+			},
+			new BranchCode("DEL01"));
 
 		if (goods > 0m)
 		{

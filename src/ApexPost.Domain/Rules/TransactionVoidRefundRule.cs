@@ -5,6 +5,8 @@ namespace ApexPost.Domain.Rules;
 
 public sealed class TransactionVoidRefundRule
 {
+	private static readonly TransactionAccessRule AccessRule = new();
+
 	public void Void(Staff staff, TransactionBasket basket, string reason)
 	{
 		ValidateAuthorization(staff, basket, reason);
@@ -25,9 +27,7 @@ public sealed class TransactionVoidRefundRule
 		ArgumentNullException.ThrowIfNull(staff);
 		ArgumentNullException.ThrowIfNull(basket);
 
-		if (!staff.IsActive || staff.Role != StaffRole.BranchManager)
-			throw new InvalidOperationException(
-				"An active Branch Manager is required to void or refund a transaction.");
+		AccessRule.EnsureCanAccess(staff, basket);
 
 		if (string.IsNullOrWhiteSpace(reason))
 			throw new ArgumentException(

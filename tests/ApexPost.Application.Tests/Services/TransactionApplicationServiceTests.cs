@@ -51,7 +51,6 @@ public sealed class TransactionApplicationServiceTests
 		await service.CreateAndProcessAsync(
 			transactionId,
 			"manager-1",
-			BranchOne,
 			[new GoodsBasketRequest(ProductSku.Value, 2)],
 			[CreateShippingRequest()]);
 
@@ -83,7 +82,6 @@ public sealed class TransactionApplicationServiceTests
 			service.CreateAndProcessAsync(
 				Guid.NewGuid(),
 				"manager-1",
-				BranchOne,
 				[new GoodsBasketRequest(ProductSku.Value, 2)],
 				[CreateShippingRequest(weightKilograms: 6m)]));
 
@@ -103,7 +101,6 @@ public sealed class TransactionApplicationServiceTests
 			service.CreateAndProcessAsync(
 				Guid.NewGuid(),
 				"manager-1",
-				BranchOne,
 				[new GoodsBasketRequest(ProductSku.Value, 5)],
 				[CreateShippingRequest()]));
 
@@ -128,7 +125,6 @@ public sealed class TransactionApplicationServiceTests
 			service.CreateAndProcessAsync(
 				Guid.NewGuid(),
 				"manager-1",
-				BranchOne,
 				[new GoodsBasketRequest(ProductSku.Value, 1)],
 				[CreateShippingRequest()]));
 
@@ -145,7 +141,6 @@ public sealed class TransactionApplicationServiceTests
 		await service.CreateAndProcessAsync(
 			Guid.NewGuid(),
 			"manager-1",
-			BranchOne,
 			[],
 			[CreateShippingRequest(ShippingItemType.Letter)]);
 
@@ -168,7 +163,6 @@ public sealed class TransactionApplicationServiceTests
 			service.CreateAndProcessAsync(
 				Guid.NewGuid(),
 				"manager-1",
-				BranchOne,
 				[],
 				[CreateShippingRequest()]));
 
@@ -201,7 +195,6 @@ public sealed class TransactionApplicationServiceTests
 		await service.CreateAndProcessAsync(
 			transactionId,
 			"manager-1",
-			BranchOne,
 			[new GoodsBasketRequest(ProductSku.Value, 2)],
 			[CreateShippingRequest()]);
 
@@ -209,7 +202,6 @@ public sealed class TransactionApplicationServiceTests
 			service.CreateAndProcessAsync(
 				transactionId,
 				"manager-1",
-				BranchOne,
 				[new GoodsBasketRequest(ProductSku.Value, 2)],
 				[CreateShippingRequest()]));
 
@@ -225,11 +217,10 @@ public sealed class TransactionApplicationServiceTests
 		var repository = CreateMixedBasketRepository();
 		var service = CreateMixedBasketService(repository);
 
-		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+		await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
 			service.CreateAndProcessAsync(
 				Guid.NewGuid(),
 				"clerk-1",
-				BranchTwo,
 				[new GoodsBasketRequest(ProductSku.Value, 1)],
 				[]));
 
@@ -237,12 +228,89 @@ public sealed class TransactionApplicationServiceTests
 			service.CreateAndProcessAsync(
 				Guid.NewGuid(),
 				"manager-1",
-				BranchOne,
 				[],
 				[CreateShippingRequest(
 					serviceLevel: ShippingServiceLevel.Express)]));
 
 		Assert.Empty((await repository.LoadAsync()).TransactionBaskets);
+	}
+
+	[Fact]
+	public async Task TransactionReads_ReturnOnlyTheActiveManagersAssignedBranch()
+	{
+		var localBasket = CreateScopedBasket(
+			Guid.NewGuid(), BranchOne, TransactionPaymentStatus.Paid);
+		var otherBranchBasket = CreateScopedBasket(
+			Guid.NewGuid(), BranchTwo, TransactionPaymentStatus.Paid);
+		var legacyBasket = CreateScopedBasket(
+			Guid.NewGuid(), null, TransactionPaymentStatus.Paid);
+		var repository = new InMemoryApexPostRepository(
+			CreateScopedSnapshot(
+				[localBasket, otherBranchBasket, legacyBasket]));
+		var service = new TransactionApplicationService(repository);
+
+		var visible = await service.GetTransactionBasketsAsync("manager-1");
+		var details = await service.GetTransactionBasketAsync(
+			localBasket.Id, "manager-1");
+
+		Assert.Equal([localBasket.Id], visible.Select(item => item.Id));
+		Assert.Equal(localBasket.Id, details.Id);
+		await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+			service.GetTransactionBasketAsync(
+				otherBranchBasket.Id, "manager-1"));
+		await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+			service.GetTransactionBasketAsync(
+				legacyBasket.Id, "manager-1"));
+	}
+
+	[Fact]
+	public async Task TransactionReads_RejectInactiveStaffAndWrongRole()
+	{
+		var manager = CreateStaff(
+			"manager-1", StaffRole.BranchManager, BranchOne);
+		manager.Deactivate();
+		var inactiveSnapshot = CreateScopedSnapshot(
+			[CreateScopedBasket(
+				Guid.NewGuid(), BranchOne, TransactionPaymentStatus.Paid)],
+			[manager]);
+		var inactiveService = new TransactionApplicationService(
+			new InMemoryApexPostRepository(inactiveSnapshot));
+
+		await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+			inactiveService.GetTransactionBasketsAsync("manager-1"));
+
+		var clerkService = new TransactionApplicationService(
+			new InMemoryApexPostRepository(CreateScopedSnapshot(
+				[],
+				[CreateStaff("manager-1", StaffRole.CounterClerk, BranchOne)])));
+		await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+			clerkService.GetTransactionBasketsAsync("manager-1"));
+	}
+
+	[Theory]
+	[InlineData(TransactionPaymentStatus.Open, "void")]
+	[InlineData(TransactionPaymentStatus.Paid, "refund")]
+	public async Task StatusChange_CannotMutateAnotherBranchesTransaction(
+		TransactionPaymentStatus status,
+		string action)
+	{
+		var foreignBasket = CreateScopedBasket(
+			Guid.NewGuid(), BranchTwo, status);
+		var repository = new InMemoryApexPostRepository(
+			CreateScopedSnapshot([foreignBasket]));
+		var service = new TransactionApplicationService(repository);
+
+		var operation = action == "void"
+			? service.VoidAsync(
+				foreignBasket.Id, "manager-1", "Attempted branch crossing")
+			: service.RefundAsync(
+				foreignBasket.Id, "manager-1", "Attempted branch crossing");
+		await Assert.ThrowsAsync<KeyNotFoundException>(() => operation);
+
+		Assert.Equal(
+			status,
+			Assert.Single(
+				(await repository.LoadAsync()).TransactionBaskets).PaymentStatus);
 	}
 
 	[Fact]
@@ -283,7 +351,20 @@ public sealed class TransactionApplicationServiceTests
 	{
 		var repository = new InMemoryApexPostRepository(CreateSnapshot());
 		var service = new TransactionApplicationService(repository);
-		var voidId = await service.CreateBasketAsync("INR", CreateTaxRates());
+		var voidBasket = new TransactionBasket(
+			"INR", CreateTaxRates(), BranchOne);
+		var initialSnapshot = await repository.LoadAsync();
+		await repository.SaveAsync(new ApexPostSnapshot(
+			initialSnapshot.Branches,
+			initialSnapshot.Staff,
+			initialSnapshot.Products,
+			initialSnapshot.BranchStocks,
+			initialSnapshot.ShippingItems,
+			initialSnapshot.ShippingRates,
+			initialSnapshot.MoneyOrders,
+			initialSnapshot.IdentityVerifications,
+			[voidBasket]));
+		var voidId = voidBasket.Id;
 		var refundId = await CreateGoodsBasketAsync(service);
 		await service.ProcessSaleAsync(refundId, "manager-1", BranchOne);
 
@@ -304,7 +385,7 @@ public sealed class TransactionApplicationServiceTests
 			Assert.IsType<TransactionRefundedNotification>(
 				Assert.Single(refunded.Notifications)).Reason);
 
-		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+		await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
 			service.VoidAsync(voidId, "clerk-1", "Unauthorized"));
 		Assert.Equal(
 			TransactionPaymentStatus.Voided,
@@ -365,6 +446,54 @@ public sealed class TransactionApplicationServiceTests
 	{
 		[TaxCategory.Standard] = 0m
 	};
+
+	private static TransactionBasket CreateScopedBasket(
+		Guid id,
+		BranchCode? branchCode,
+		TransactionPaymentStatus status)
+	{
+		var lineItems = new[]
+		{
+			new TransactionLineItem(
+				"Counter service",
+				TransactionItemType.Service,
+				new Money(10m, "INR"),
+				1,
+				TaxCategory.Standard)
+		};
+		return TransactionBasket.Reconstitute(
+			id,
+			"INR",
+			new Dictionary<TaxCategory, decimal>
+			{
+				[TaxCategory.Standard] = 0m
+			},
+			lineItems,
+			status,
+			[],
+			branchCode);
+	}
+
+	private static ApexPostSnapshot CreateScopedSnapshot(
+		IEnumerable<TransactionBasket> baskets,
+		IEnumerable<Staff>? staff = null)
+	{
+		var defaultStaff = new[]
+		{
+			CreateStaff("manager-1", StaffRole.BranchManager, BranchOne),
+			CreateStaff("manager-2", StaffRole.BranchManager, BranchTwo)
+		};
+		return new ApexPostSnapshot(
+			[CreateBranch(BranchOne), CreateBranch(BranchTwo)],
+			staff ?? defaultStaff,
+			[],
+			[],
+			[],
+			[],
+			[],
+			[],
+			baskets);
+	}
 
 	private static InMemoryApexPostRepository CreateMixedBasketRepository(
 		ShippingRate? shippingRate = null)

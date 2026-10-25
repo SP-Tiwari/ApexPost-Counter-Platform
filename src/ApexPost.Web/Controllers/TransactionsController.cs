@@ -1,5 +1,5 @@
 using ApexPost.Application.Services;
-using ApexPost.Application.Persistence;
+using ApexPost.Domain.Entities;
 using ApexPost.Domain.Enums;
 using ApexPost.Domain.Notifications;
 using ApexPost.Domain.ValueObjects;
@@ -29,8 +29,28 @@ public sealed class TransactionsController : Controller
 	[HttpGet]
 	public async Task<IActionResult> Index(CancellationToken cancellationToken)
 	{
-		var transactions = await _transactions.GetTransactionBasketsAsync(
-			cancellationToken);
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
+		IReadOnlyList<TransactionBasketSnapshot> transactions;
+		try
+		{
+			transactions = await _transactions.GetTransactionBasketsAsync(
+				staffId, cancellationToken);
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
+		}
+		catch (KeyNotFoundException)
+		{
+			return NotFound();
+		}
+		catch (InvalidOperationException)
+		{
+			return Forbid();
+		}
 		var model = transactions
 			.Select(basket => new TransactionListViewModel(
 				basket.Id,
@@ -46,13 +66,24 @@ public sealed class TransactionsController : Controller
 	public async Task<IActionResult> Create(
 		CancellationToken cancellationToken)
 	{
-		var model = await BuildCreateViewModelAsync(
-			new CreateTransactionViewModel
-			{
-				TransactionId = Guid.NewGuid()
-			},
-			cancellationToken);
-		return View(model);
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+		try
+		{
+			var model = await BuildCreateViewModelAsync(
+				new CreateTransactionViewModel
+				{
+					TransactionId = Guid.NewGuid()
+				},
+				staffId,
+				cancellationToken);
+			return View(model);
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
+		}
 	}
 
 	[HttpPost("Create")]
@@ -125,6 +156,10 @@ public sealed class TransactionsController : Controller
 				string.Empty,
 				"Add at least one goods item or shipping service.");
 
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
 		if (!_mixedBaskets.HasTaxRates)
 			ModelState.AddModelError(
 				string.Empty,
@@ -134,26 +169,8 @@ public sealed class TransactionsController : Controller
 		{
 			Response.StatusCode = StatusCodes.Status400BadRequest;
 			return View(await BuildCreateViewModelAsync(
-				model, cancellationToken));
+				model, staffId, cancellationToken));
 		}
-
-		BranchCode branchCode;
-		try
-		{
-			branchCode = new BranchCode(model.BranchCode);
-		}
-		catch (ArgumentException)
-		{
-			ModelState.AddModelError(
-				nameof(model.BranchCode), "Select a valid branch.");
-			Response.StatusCode = StatusCodes.Status400BadRequest;
-			return View(await BuildCreateViewModelAsync(
-				model, cancellationToken));
-		}
-
-		var staffId = User.FindFirst("StaffId")?.Value;
-		if (string.IsNullOrWhiteSpace(staffId))
-			return Forbid();
 
 		try
 		{
@@ -172,7 +189,6 @@ public sealed class TransactionsController : Controller
 				await _mixedBaskets.CreateAndProcessAsync(
 					model.TransactionId,
 					staffId,
-					branchCode,
 					goods,
 					shipments,
 					cancellationToken);
@@ -196,7 +212,7 @@ public sealed class TransactionsController : Controller
 				"One or more transaction values are invalid.");
 			Response.StatusCode = StatusCodes.Status400BadRequest;
 			return View(await BuildCreateViewModelAsync(
-				model, cancellationToken));
+				model, staffId, cancellationToken));
 		}
 		catch (InvalidOperationException)
 		{
@@ -205,7 +221,7 @@ public sealed class TransactionsController : Controller
 				"The transaction could not be processed. Check configured rates, weight limits, stock, and submission status.");
 			Response.StatusCode = StatusCodes.Status409Conflict;
 			return View(await BuildCreateViewModelAsync(
-				model, cancellationToken));
+				model, staffId, cancellationToken));
 		}
 	}
 
@@ -214,14 +230,22 @@ public sealed class TransactionsController : Controller
 		Guid transactionId,
 		CancellationToken cancellationToken)
 	{
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
 		try
 		{
 			return View(await BuildDetailsViewModelAsync(
-				transactionId, cancellationToken));
+				transactionId, staffId, cancellationToken));
 		}
 		catch (KeyNotFoundException)
 		{
 			return NotFound();
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
 		}
 	}
 
@@ -261,18 +285,19 @@ public sealed class TransactionsController : Controller
 		if (transactionId == Guid.Empty)
 			return BadRequest();
 
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
 		if (!ModelState.IsValid)
 		{
 			return await RenderDetailsWithErrorAsync(
 				transactionId,
+				staffId,
 				StatusCodes.Status400BadRequest,
 				"Enter a reason of no more than 500 characters.",
 				cancellationToken);
 		}
-
-		var staffId = User.FindFirst("StaffId")?.Value;
-		if (string.IsNullOrWhiteSpace(staffId))
-			return Forbid();
 
 		try
 		{
@@ -289,10 +314,15 @@ public sealed class TransactionsController : Controller
 		{
 			return NotFound();
 		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
+		}
 		catch (ArgumentException)
 		{
 			return await RenderDetailsWithErrorAsync(
 				transactionId,
+				staffId,
 				StatusCodes.Status400BadRequest,
 				"Enter a valid reason for this transaction action.",
 				cancellationToken);
@@ -301,6 +331,7 @@ public sealed class TransactionsController : Controller
 		{
 			return await RenderDetailsWithErrorAsync(
 				transactionId,
+				staffId,
 				StatusCodes.Status409Conflict,
 				"This transaction cannot be changed in its current state.",
 				cancellationToken);
@@ -309,6 +340,7 @@ public sealed class TransactionsController : Controller
 
 	private async Task<IActionResult> RenderDetailsWithErrorAsync(
 		Guid transactionId,
+		string staffId,
 		int statusCode,
 		string errorMessage,
 		CancellationToken cancellationToken)
@@ -316,7 +348,7 @@ public sealed class TransactionsController : Controller
 		try
 		{
 			var model = await BuildDetailsViewModelAsync(
-				transactionId, cancellationToken);
+				transactionId, staffId, cancellationToken);
 			ViewData["TransactionActionError"] = errorMessage;
 			Response.StatusCode = statusCode;
 			return View("Details", model);
@@ -325,14 +357,20 @@ public sealed class TransactionsController : Controller
 		{
 			return NotFound();
 		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
+		}
 	}
 
 	private async Task<TransactionDetailsViewModel> BuildDetailsViewModelAsync(
 		Guid transactionId,
+		string staffId,
 		CancellationToken cancellationToken)
 	{
 		var basket = await _transactions.GetTransactionBasketAsync(
 			transactionId,
+			staffId,
 			cancellationToken);
 		return new TransactionDetailsViewModel(
 			basket.Id,
@@ -375,14 +413,15 @@ public sealed class TransactionsController : Controller
 
 	private async Task<CreateTransactionViewModel> BuildCreateViewModelAsync(
 		CreateTransactionViewModel model,
+		string staffId,
 		CancellationToken cancellationToken)
 	{
-		var catalog = await _mixedBaskets.GetCatalogAsync(cancellationToken);
+		var catalog = await _mixedBaskets.GetCatalogAsync(
+			staffId, cancellationToken);
 		model.Products = catalog.Products;
-		model.Branches = catalog.Branches;
+		model.Branch = catalog.Branch;
 		model.ShippingRates = catalog.ShippingRates;
 		model.CanSubmit = _mixedBaskets.HasTaxRates &&
-			catalog.Branches.Count > 0 &&
 			(catalog.Products.Count > 0 || catalog.ShippingRates.Count > 0);
 		return model;
 	}
