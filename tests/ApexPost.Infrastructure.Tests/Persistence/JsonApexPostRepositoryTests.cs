@@ -60,6 +60,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			"Passport",
 			FullDocumentIdentifier,
 			true);
+		var moneyOrder = CreateMoneyOrder(verification);
 		var paidBasket = CreateBasket(product);
 		paidBasket.Pay();
 		var voidedBasket = CreateBasket(product);
@@ -72,7 +73,16 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			new Dictionary<TaxCategory, decimal>
 			{
 				[TaxCategory.Standard] = 0.1m
-			});
+			},
+			new BranchCode("DEL01"));
+		openBasket.AddLineItem(new TransactionLineItem(
+			"Parcel shipping",
+			TransactionItemType.Service,
+			new Money(5m, "INR"),
+			1,
+			TaxCategory.Standard,
+			productSku: null,
+			shippingItem: CreateShippingItem()));
 		var snapshot = new ApexPostSnapshot(
 			[branch],
 			[staff],
@@ -80,7 +90,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			[new BranchStock(new BranchCode("DEL01"), product.Sku, 8)],
 			[CreateShippingItem()],
 			[CreateShippingRate()],
-			[CreateMoneyOrder()],
+			[moneyOrder],
 			[verification],
 			[openBasket, paidBasket, voidedBasket, basket]);
 
@@ -109,8 +119,8 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 		Assert.Equal("Sender", loadedMoneyOrder.Sender);
 		Assert.Equal("Recipient", loadedMoneyOrder.Recipient);
 		Assert.Equal(new Money(5m, "INR"), loadedMoneyOrder.Fee);
-
 		var loadedVerification = Assert.Single(loaded.IdentityVerifications);
+		Assert.Equal(verification, loadedMoneyOrder.IdentityVerification);
 		Assert.Equal("Passport", loadedVerification.DocumentType);
 		Assert.True(loadedVerification.IsSuccessful);
 		Assert.EndsWith("1234", loadedVerification.MaskedDocumentIdentifier);
@@ -125,6 +135,17 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 		var loadedBasket = loaded.TransactionBaskets[0];
 		Assert.Equal(openBasket.Id, loadedBasket.Id);
 		Assert.Equal(TransactionPaymentStatus.Open, loadedBasket.PaymentStatus);
+		Assert.Equal(new BranchCode("DEL01"), loadedBasket.BranchCode);
+		var loadedBasketShipping = Assert.Single(loadedBasket.LineItems)
+			.ShippingItem!;
+		Assert.Equal("SHIP01", loadedBasketShipping.Id);
+		Assert.Equal(ShippingItemType.Parcel, loadedBasketShipping.Type);
+		Assert.Equal(new Weight(2m), loadedBasketShipping.Weight);
+		Assert.Equal(
+			new Dimensions(10m, 20m, 30m), loadedBasketShipping.Dimensions);
+		Assert.Equal("ZONE-A", loadedBasketShipping.DestinationZone);
+		Assert.Equal(
+			ShippingServiceLevel.Standard, loadedBasketShipping.ServiceLevel);
 		Assert.Equal(
 			TransactionPaymentStatus.Paid,
 			loaded.TransactionBaskets[1].PaymentStatus);
@@ -176,13 +197,70 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 
 		var persistedAfterMigration = JsonNode.Parse(
 			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
-		Assert.Equal(2, persistedAfterMigration["schemaVersion"]!.GetValue<int>());
+		Assert.Equal(4, persistedAfterMigration["schemaVersion"]!.GetValue<int>());
 		Assert.Equal(
 			migratedBasket.Id,
 			persistedAfterMigration["transactionBaskets"]![0]!["id"]!
 				.GetValue<Guid>());
 		Assert.Equal(migratedBasket.Id,
 			Assert.Single((await repository.LoadAsync()).TransactionBaskets).Id);
+	}
+
+	[Fact]
+	public async Task LoadAsync_WhenLoadingVersionThreeAddsOptionalShippingMetadata()
+	{
+		using var repository = CreateRepository();
+		var basket = new TransactionBasket(
+			"INR",
+			new Dictionary<TaxCategory, decimal>
+			{
+				[TaxCategory.Standard] = 0m
+			});
+		basket.AddLineItem(new TransactionLineItem(
+			"Parcel shipping",
+			TransactionItemType.Service,
+			new Money(5m, "INR"),
+			1,
+			TaxCategory.Standard,
+			productSku: null,
+			shippingItem: CreateShippingItem()));
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [], [], [basket]));
+
+		var document = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		document["schemaVersion"] = 3;
+		var persistedBasket = document["transactionBaskets"]![0]!.AsObject();
+		persistedBasket.Remove("branchCode");
+		persistedBasket["lineItems"]![0]!.AsObject().Remove("shippingItem");
+		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
+
+		var loaded = await repository.LoadAsync();
+
+		Assert.Null(Assert.Single(loaded.TransactionBaskets)
+			.LineItems.Single().ShippingItem);
+		var migrated = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		Assert.Equal(4, migrated["schemaVersion"]!.GetValue<int>());
+	}
+
+	[Fact]
+	public async Task LoadAsync_WhenLoadingVersionTwoSnapshot_MigratesIdentityAssociationSchema()
+	{
+		using var repository = CreateRepository();
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [CreateMoneyOrder()], [], []));
+		var document = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		document["schemaVersion"] = 2;
+		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
+
+		var loaded = await repository.LoadAsync();
+
+		Assert.Single(loaded.MoneyOrders);
+		var persistedAfterMigration = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		Assert.Equal(4, persistedAfterMigration["schemaVersion"]!.GetValue<int>());
 	}
 
 	[Fact]
@@ -558,10 +636,12 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			new Money(5m, "INR"),
 			new Money(2m, "INR"));
 
-	private static MoneyOrder CreateMoneyOrder() =>
+	private static MoneyOrder CreateMoneyOrder(
+		IdentityVerification? identityVerification = null) =>
 		new(
 			new Money(100m, "INR"),
 			"Sender",
 			"Recipient",
-			new Money(5m, "INR"));
+			new Money(5m, "INR"),
+			identityVerification);
 }

@@ -10,8 +10,8 @@ namespace ApexPost.Infrastructure.Persistence;
 
 public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 {
-	private const int PreviousSchemaVersion = 1;
-	private const int CurrentSchemaVersion = 2;
+	private const int LegacySchemaVersion = 1;
+	private const int CurrentSchemaVersion = 4;
 	private readonly string _filePath;
 	private readonly SemaphoreSlim _fileLock = new(1, 1);
 	private readonly JsonSerializerOptions _serializerOptions = new()
@@ -129,15 +129,15 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 			document = deserialized;
 		}
 
-		if (document.SchemaVersion is not PreviousSchemaVersion and
-			not CurrentSchemaVersion)
+		if (document.SchemaVersion < LegacySchemaVersion ||
+			document.SchemaVersion > CurrentSchemaVersion)
 			throw new InvalidDataException(
 				$"Unsupported ApexPost data schema version '{document.SchemaVersion}'.");
 
-		var isLegacySchema = document.SchemaVersion == PreviousSchemaVersion;
+		var isLegacySchema = document.SchemaVersion == LegacySchemaVersion;
 		ValidateDocument(document, isLegacySchema);
 		var snapshot = ToSnapshot(document);
-		if (isLegacySchema)
+		if (document.SchemaVersion != CurrentSchemaVersion)
 			await SaveUnderLockAsync(snapshot, cancellationToken)
 				.ConfigureAwait(false);
 
@@ -255,15 +255,14 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				Amount = ToMoney(order.Amount),
 				Sender = order.Sender,
 				Recipient = order.Recipient,
-				Fee = ToMoney(order.Fee)
+				Fee = ToMoney(order.Fee),
+				IdentityVerification = order.IdentityVerification is null
+					? null
+					: ToPersistedIdentityVerification(
+						order.IdentityVerification)
 			}).ToList(),
 			IdentityVerifications = snapshot.IdentityVerifications
-				.Select(verification => new PersistedIdentityVerification
-				{
-					DocumentType = verification.DocumentType,
-					MaskedDocumentIdentifier = verification.MaskedDocumentIdentifier,
-					IsSuccessful = verification.IsSuccessful
-				})
+				.Select(ToPersistedIdentityVerification)
 				.ToList(),
 			TransactionBaskets = snapshot.TransactionBaskets
 				.Select(ToPersistedBasket)
@@ -294,8 +293,12 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				UnitPrice = ToMoney(lineItem.UnitPrice),
 				Quantity = lineItem.Quantity,
 				TaxCategory = lineItem.TaxCategory,
-				ProductSku = lineItem.ProductSku?.Value
+				ProductSku = lineItem.ProductSku?.Value,
+				ShippingItem = lineItem.ShippingItem is null
+					? null
+					: ToPersistedShippingItem(lineItem.ShippingItem)
 			}).ToList(),
+			BranchCode = basket.BranchCode?.Value,
 			PaymentStatus = basket.PaymentStatus,
 			Notifications = basket.Notifications.Select(notification => notification switch
 			{
@@ -326,13 +329,7 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 					new BranchCode(stock.BranchCode),
 					new Sku(stock.ProductSku),
 					stock.Quantity)),
-				document.ShippingItems.Select(item => new ShippingItem(
-					item.Id,
-					item.Type,
-					new Weight(item.WeightKilograms),
-					new Dimensions(item.LengthCm, item.WidthCm, item.HeightCm),
-					item.DestinationZone,
-					item.ServiceLevel)),
+				document.ShippingItems.Select(ToShippingItem),
 				document.ShippingRates.Select(rate => new ShippingRate(
 					rate.DestinationZone,
 					rate.ServiceLevel,
@@ -342,14 +339,15 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 					ToMoney(order.Amount),
 					order.Sender,
 					order.Recipient,
-					ToMoney(order.Fee))),
+					ToMoney(order.Fee),
+					order.IdentityVerification is null
+						? null
+						: ToIdentityVerification(order.IdentityVerification))),
 				document.IdentityVerifications.Select(verification =>
-					IdentityVerification.FromMaskedIdentifier(
-						verification.DocumentType,
-						verification.MaskedDocumentIdentifier,
-						verification.IsSuccessful)),
+					ToIdentityVerification(verification)),
 				document.TransactionBaskets.Select(ToBasket));
 		}
+
 		catch (Exception exception) when (
 			exception is ArgumentException or InvalidOperationException or
 			OverflowException or KeyNotFoundException)
@@ -358,6 +356,45 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				"Persisted ApexPost data violates Domain invariants.", exception);
 		}
 	}
+
+	private static PersistedIdentityVerification
+		ToPersistedIdentityVerification(IdentityVerification verification) =>
+		new()
+		{
+			DocumentType = verification.DocumentType,
+			MaskedDocumentIdentifier = verification.MaskedDocumentIdentifier,
+			IsSuccessful = verification.IsSuccessful
+		};
+
+	private static IdentityVerification ToIdentityVerification(
+		PersistedIdentityVerification verification) =>
+		IdentityVerification.FromMaskedIdentifier(
+			verification.DocumentType,
+			verification.MaskedDocumentIdentifier,
+			verification.IsSuccessful);
+
+	private static PersistedShippingItem ToPersistedShippingItem(
+		ShippingItem item) =>
+		new()
+		{
+			Id = item.Id,
+			Type = item.Type,
+			WeightKilograms = item.Weight.Kilograms,
+			LengthCm = item.Dimensions.LengthCm,
+			WidthCm = item.Dimensions.WidthCm,
+			HeightCm = item.Dimensions.HeightCm,
+			DestinationZone = item.DestinationZone,
+			ServiceLevel = item.ServiceLevel
+		};
+
+	private static ShippingItem ToShippingItem(PersistedShippingItem item) =>
+		new(
+			item.Id,
+			item.Type,
+			new Weight(item.WeightKilograms),
+			new Dimensions(item.LengthCm, item.WidthCm, item.HeightCm),
+			item.DestinationZone,
+			item.ServiceLevel);
 
 	private static void ValidateDocument(
 		PersistedApexPost document,
@@ -462,7 +499,10 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				ToMoney(item.UnitPrice),
 				item.Quantity,
 				item.TaxCategory,
-				item.ProductSku is null ? null : new Sku(item.ProductSku)));
+				item.ProductSku is null ? null : new Sku(item.ProductSku),
+				item.ShippingItem is null
+					? null
+					: ToShippingItem(item.ShippingItem)));
 		var notifications = basket.Notifications.Select(notification =>
 			notification.Type switch
 			{
@@ -480,7 +520,10 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 			taxRates,
 			lineItems,
 			basket.PaymentStatus,
-			notifications);
+			notifications,
+			basket.BranchCode is null
+				? null
+				: new BranchCode(basket.BranchCode));
 	}
 
 	private static PersistedMoney ToMoney(Money money) =>
@@ -573,6 +616,7 @@ internal sealed class PersistedMoneyOrder
 	public required string Sender { get; set; }
 	public required string Recipient { get; set; }
 	public required PersistedMoney Fee { get; set; }
+	public PersistedIdentityVerification? IdentityVerification { get; set; }
 }
 
 internal sealed class PersistedIdentityVerification
@@ -591,6 +635,7 @@ internal sealed class PersistedMoney
 internal sealed class PersistedTransactionBasket
 {
 	public Guid? Id { get; set; }
+	public string? BranchCode { get; set; }
 	public required string Currency { get; set; }
 	public required List<PersistedTaxRate> TaxRates { get; set; }
 	public required List<PersistedLineItem> LineItems { get; set; }
@@ -612,6 +657,7 @@ internal sealed class PersistedLineItem
 	public required int Quantity { get; set; }
 	public required TaxCategory TaxCategory { get; set; }
 	public required string? ProductSku { get; set; }
+	public PersistedShippingItem? ShippingItem { get; set; }
 }
 
 internal sealed class PersistedNotification

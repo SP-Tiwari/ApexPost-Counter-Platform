@@ -33,6 +33,7 @@ public sealed class SaleProcessingService
 			throw new InvalidOperationException(
 				"An empty transaction basket cannot be processed as a sale.");
 
+		basket.EnsureBranch(branchCode);
 		_ = basket.Total;
 
 		var requiredQuantities = new Dictionary<Sku, int>();
@@ -87,6 +88,7 @@ public sealed class SaleProcessingService
 		foreach (var (productSku, quantity) in requiredQuantities)
 			availableStock[productSku].RemoveStock(quantity);
 
+		basket.AssignBranch(branchCode);
 		basket.Pay();
 	}
 }

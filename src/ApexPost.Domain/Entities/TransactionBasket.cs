@@ -12,9 +12,18 @@ public sealed class TransactionBasket
 	private readonly List<DomainNotification> _notifications = [];
 	private TransactionPaymentStatus _paymentStatus =
 		TransactionPaymentStatus.Open;
+	private BranchCode? _branchCode;
 
 	public Guid Id { get; }
 	public string Currency { get; }
+	public BranchCode? BranchCode
+	{
+		get
+		{
+			lock (DomainMutationLock.Gate)
+				return _branchCode;
+		}
+	}
 	public TransactionPaymentStatus PaymentStatus
 	{
 		get
@@ -58,6 +67,7 @@ public sealed class TransactionBasket
 				Total,
 				new Dictionary<TaxCategory, decimal>(_taxRates),
 				_lineItems.ToArray(),
+				_branchCode,
 				_paymentStatus,
 				_notifications.ToArray());
 		}
@@ -102,15 +112,17 @@ public sealed class TransactionBasket
 
 	public TransactionBasket(
 		string currency,
-		IReadOnlyDictionary<TaxCategory, decimal> taxRates)
-		: this(Guid.NewGuid(), currency, taxRates)
+		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
+		BranchCode? branchCode = null)
+		: this(Guid.NewGuid(), currency, taxRates, branchCode)
 	{
 	}
 
-	private TransactionBasket(
+	public TransactionBasket(
 		Guid id,
 		string currency,
-		IReadOnlyDictionary<TaxCategory, decimal> taxRates)
+		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
+		BranchCode? branchCode)
 	{
 		ArgumentNullException.ThrowIfNull(taxRates);
 
@@ -120,6 +132,7 @@ public sealed class TransactionBasket
 
 		Id = id;
 		Currency = new Money(0m, currency).Currency;
+		_branchCode = branchCode;
 		_taxRates = new Dictionary<TaxCategory, decimal>();
 
 		foreach (var (taxCategory, taxRate) in taxRates)
@@ -140,14 +153,16 @@ public sealed class TransactionBasket
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
 		IEnumerable<TransactionLineItem> lineItems,
 		TransactionPaymentStatus paymentStatus,
-		IEnumerable<DomainNotification> notifications)
+		IEnumerable<DomainNotification> notifications,
+		BranchCode? branchCode = null)
 		=> Reconstitute(
 			Guid.NewGuid(),
 			currency,
 			taxRates,
 			lineItems,
 			paymentStatus,
-			notifications);
+			notifications,
+			branchCode);
 
 	public static TransactionBasket Reconstitute(
 		Guid id,
@@ -155,7 +170,8 @@ public sealed class TransactionBasket
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
 		IEnumerable<TransactionLineItem> lineItems,
 		TransactionPaymentStatus paymentStatus,
-		IEnumerable<DomainNotification> notifications)
+		IEnumerable<DomainNotification> notifications,
+		BranchCode? branchCode = null)
 	{
 		ArgumentNullException.ThrowIfNull(lineItems);
 		ArgumentNullException.ThrowIfNull(notifications);
@@ -164,7 +180,7 @@ public sealed class TransactionBasket
 			throw new ArgumentOutOfRangeException(nameof(paymentStatus));
 
 		var restoredNotifications = notifications.ToArray();
-		var basket = new TransactionBasket(id, currency, taxRates);
+		var basket = new TransactionBasket(id, currency, taxRates, branchCode);
 		foreach (var lineItem in lineItems)
 			basket.AddLineItem(lineItem);
 
@@ -210,6 +226,23 @@ public sealed class TransactionBasket
 
 			_lineItems.Add(lineItem);
 		}
+	}
+
+	internal void AssignBranch(BranchCode branchCode)
+	{
+		ArgumentNullException.ThrowIfNull(branchCode);
+		lock (DomainMutationLock.Gate)
+		{
+			EnsureBranchUnderLock(branchCode);
+			_branchCode = branchCode;
+		}
+	}
+
+	internal void EnsureBranch(BranchCode branchCode)
+	{
+		ArgumentNullException.ThrowIfNull(branchCode);
+		lock (DomainMutationLock.Gate)
+			EnsureBranchUnderLock(branchCode);
 	}
 
 	public void Pay()
@@ -330,5 +363,12 @@ public sealed class TransactionBasket
 			throw new InvalidOperationException(
 				$"This operation is only valid for an Open transaction; current status is '{PaymentStatus}'.");
 		}
+	}
+
+	private void EnsureBranchUnderLock(BranchCode branchCode)
+	{
+		if (_branchCode is not null && _branchCode != branchCode)
+			throw new InvalidOperationException(
+				"A transaction cannot be processed at a different branch.");
 	}
 }

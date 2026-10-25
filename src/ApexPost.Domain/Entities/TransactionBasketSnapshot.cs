@@ -14,6 +14,7 @@ public sealed class TransactionBasketSnapshot
 	public Money Total { get; }
 	public IReadOnlyDictionary<TaxCategory, decimal> TaxRates { get; }
 	public IReadOnlyList<TransactionLineItem> LineItems { get; }
+	public BranchCode? BranchCode { get; }
 	public TransactionPaymentStatus PaymentStatus { get; }
 	public IReadOnlyList<DomainNotification> Notifications { get; }
 
@@ -25,6 +26,7 @@ public sealed class TransactionBasketSnapshot
 		Money total,
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
 		IEnumerable<TransactionLineItem> lineItems,
+		BranchCode? branchCode,
 		TransactionPaymentStatus paymentStatus,
 		IEnumerable<DomainNotification> notifications)
 	{
@@ -36,6 +38,7 @@ public sealed class TransactionBasketSnapshot
 		TaxRates = new ReadOnlyDictionary<TaxCategory, decimal>(
 			new Dictionary<TaxCategory, decimal>(taxRates));
 		LineItems = Array.AsReadOnly(lineItems.ToArray());
+		BranchCode = branchCode;
 		PaymentStatus = paymentStatus;
 		Notifications = Array.AsReadOnly(notifications.ToArray());
 	}

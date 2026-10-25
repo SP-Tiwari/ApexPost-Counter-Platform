@@ -9,6 +9,7 @@ public sealed record TransactionDetailsViewModel(
 	decimal Tax,
 	decimal Total,
 	string Currency,
+	string? BranchCode,
 	IReadOnlyList<TransactionLineViewModel> LineItems,
 	IReadOnlyList<TransactionNotificationViewModel> Notifications);
 
@@ -18,7 +19,8 @@ public sealed record TransactionLineViewModel(
 	decimal UnitPrice,
 	int Quantity,
 	decimal Subtotal,
-	string Currency);
+	string Currency,
+	string? ShippingDetails);
 
 public sealed record TransactionNotificationViewModel(
 	string Type,

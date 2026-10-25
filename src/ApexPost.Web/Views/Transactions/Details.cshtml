@@ -26,6 +26,11 @@
     <dd class="col-sm-9">@Model.Tax @Model.Currency</dd>
     <dt class="col-sm-3">Total</dt>
     <dd class="col-sm-9">@Model.Total @Model.Currency</dd>
+    @if (Model.BranchCode is not null)
+    {
+        <dt class="col-sm-3">Processed at branch</dt>
+        <dd class="col-sm-9">@Model.BranchCode</dd>
+    }
 </dl>
 
 <h2>Line items</h2>
@@ -43,6 +48,7 @@ else
                 <th scope="col">Unit price</th>
                 <th scope="col">Quantity</th>
                 <th scope="col">Subtotal</th>
+                <th scope="col">Shipping details</th>
             </tr>
         </thead>
         <tbody>
@@ -54,6 +60,7 @@ else
                     <td>@item.UnitPrice @item.Currency</td>
                     <td>@item.Quantity</td>
                     <td>@item.Subtotal @item.Currency</td>
+                    <td>@item.ShippingDetails</td>
                 </tr>
             }
         </tbody>

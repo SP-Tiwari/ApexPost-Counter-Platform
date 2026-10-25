@@ -29,6 +29,10 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", _storageDirectory);
+				builder.UseSetting("Transactions:TaxRates:Standard", "0.1");
+				builder.UseSetting("Shipping:TaxCategory", "Standard");
+				builder.UseSetting(
+					"Shipping:MaximumParcelWeightKilograms:Standard", "5");
 				builder.ConfigureTestServices(services =>
 					services.AddAuthentication(options =>
 					{
@@ -214,6 +218,151 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 		var response = await client.GetAsync($"/Transactions/{Guid.NewGuid()}");
 
 		Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+	}
+
+	[Fact]
+	public async Task CreateTransactionPage_RequiresBranchManager()
+	{
+		var client = _factory.CreateClient();
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.Unauthorized,
+			(await client.GetAsync("/Transactions/Create")).StatusCode);
+		Assert.Equal(
+			System.Net.HttpStatusCode.Unauthorized,
+			(await client.PostAsync(
+				"/Transactions/Create",
+				new FormUrlEncodedContent([]))).StatusCode);
+
+		client.DefaultRequestHeaders.Add("X-Test-Role", "CounterClerk");
+		Assert.Equal(
+			System.Net.HttpStatusCode.Forbidden,
+			(await client.GetAsync("/Transactions/Create")).StatusCode);
+		Assert.Equal(
+			System.Net.HttpStatusCode.Forbidden,
+			(await client.PostAsync(
+				"/Transactions/Create",
+				new FormUrlEncodedContent([]))).StatusCode);
+	}
+
+	[Fact]
+	public async Task CreateTransaction_MixedBasketProcessesAndPersistsBranchAndShipment()
+	{
+		await SeedMixedBasketDataAsync();
+		using var client = CreateManagerClient();
+		var (transactionId, token) =
+			await GetCreateFormIdentityAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateMixedBasketForm(transactionId, token));
+
+		Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
+		Assert.Equal(
+			$"/Transactions/{transactionId}",
+			response.Headers.Location?.OriginalString);
+		var snapshot = await GetRepositoryAsync();
+		var basket = Assert.Single(snapshot.TransactionBaskets);
+		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Equal(new BranchCode("BR01"), basket.BranchCode);
+		Assert.Equal(new Money(61.6m, "INR"), basket.Total);
+		Assert.Equal(2, Assert.Single(snapshot.BranchStocks).Quantity);
+		Assert.Single(snapshot.ShippingItems);
+		var persistedShippingItem = Assert.Single(snapshot.ShippingItems);
+		var transactionShippingItem = basket.LineItems.Single(
+			item => item.ShippingItem is not null).ShippingItem!;
+		Assert.Equal(persistedShippingItem.Id, transactionShippingItem.Id);
+		Assert.Equal(
+			persistedShippingItem.Weight, transactionShippingItem.Weight);
+		Assert.Equal(
+			persistedShippingItem.DestinationZone,
+			transactionShippingItem.DestinationZone);
+	}
+
+	[Theory]
+	[InlineData("6", "2")]
+	[InlineData("3", "5")]
+	public async Task CreateTransaction_InvalidParcelOrInsufficientStockIsNotPersisted(
+		string weight,
+		string quantity)
+	{
+		await SeedMixedBasketDataAsync();
+		using var client = CreateManagerClient();
+		var (transactionId, token) =
+			await GetCreateFormIdentityAsync(client);
+		var form = CreateMixedBasketForm(
+			transactionId, token, weightKilograms: weight, goodsQuantity: quantity);
+
+		var response = await client.PostAsync("/Transactions/Create", form);
+
+		Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+		var snapshot = await GetRepositoryAsync();
+		Assert.Empty(snapshot.TransactionBaskets);
+		Assert.Empty(snapshot.ShippingItems);
+		Assert.Equal(4, Assert.Single(snapshot.BranchStocks).Quantity);
+	}
+
+	[Fact]
+	public async Task CreateTransaction_RejectsMixedCurrencies()
+	{
+		await SeedMixedBasketDataAsync(new ShippingRate(
+			"ZONE-A",
+			ShippingServiceLevel.Standard,
+			new Money(10m, "USD"),
+			new Money(2m, "USD")));
+		using var client = CreateManagerClient();
+		var (transactionId, token) =
+			await GetCreateFormIdentityAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateMixedBasketForm(transactionId, token));
+
+		Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+		Assert.Empty((await GetRepositoryAsync()).TransactionBaskets);
+	}
+
+	[Fact]
+	public async Task CreateTransaction_RejectsRepeatedSubmissionWithoutSecondDeduction()
+	{
+		await SeedMixedBasketDataAsync();
+		using var client = CreateManagerClient();
+		var (transactionId, token) =
+			await GetCreateFormIdentityAsync(client);
+		var formFields = CreateMixedBasketForm(transactionId, token);
+
+		var firstResponse = await client.PostAsync(
+			"/Transactions/Create", formFields);
+		Assert.Equal(
+			System.Net.HttpStatusCode.Redirect, firstResponse.StatusCode);
+
+		var duplicateResponse = await client.PostAsync(
+			"/Transactions/Create",
+			CreateMixedBasketForm(transactionId, token));
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.Conflict, duplicateResponse.StatusCode);
+		var snapshot = await GetRepositoryAsync();
+		Assert.Single(snapshot.TransactionBaskets);
+		Assert.Equal(2, Assert.Single(snapshot.BranchStocks).Quantity);
+		Assert.Single(snapshot.ShippingItems);
+	}
+
+	[Fact]
+	public async Task CreateTransaction_RequiresAntiforgeryToken()
+	{
+		await SeedMixedBasketDataAsync();
+		using var client = CreateManagerClient();
+		var (transactionId, _) =
+			await GetCreateFormIdentityAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateMixedBasketForm(transactionId, token: null));
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+		Assert.Empty((await GetRepositoryAsync()).TransactionBaskets);
 	}
 
 	[Theory]
@@ -420,6 +569,94 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			StringComparison.Ordinal);
 		Assert.Contains($"/Transactions/{transactionId}/void", html,
 			StringComparison.Ordinal);
+	}
+
+	private async Task SeedMixedBasketDataAsync(
+		ShippingRate? shippingRate = null)
+	{
+		var branchCode = new BranchCode("BR01");
+		var product = new Product(
+			new Sku("BOX-01"),
+			"Box",
+			ProductCategory.Packaging,
+			new Money(20m, "INR"),
+			TaxCategory.Standard);
+		var branch = new Branch(
+			branchCode,
+			"Test Branch",
+			"Test Region",
+			"09:00-17:00",
+			[new CounterTerminal("COUNTER-1", "Counter")]);
+		var manager = new Staff(
+			"manager-1",
+			"Test Manager",
+			"manager@example.test",
+			StaffRole.BranchManager,
+			branchCode);
+		await _factory.Services.GetRequiredService<IApexPostRepository>()
+			.SaveAsync(new ApexPostSnapshot(
+				[branch],
+				[manager],
+				[product],
+				[new BranchStock(branchCode, product.Sku, 4)],
+				[],
+				[shippingRate ?? new ShippingRate(
+					"ZONE-A",
+					ShippingServiceLevel.Standard,
+					new Money(10m, "INR"),
+					new Money(2m, "INR"))],
+				[],
+				[],
+				[]));
+	}
+
+	private static async Task<(Guid TransactionId, string Token)>
+		GetCreateFormIdentityAsync(HttpClient client)
+	{
+		var response = await client.GetAsync("/Transactions/Create");
+		Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+		var html = await response.Content.ReadAsStringAsync();
+		var token = Regex.Match(
+			html,
+			"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"")
+			.Groups[1].Value;
+		Assert.False(string.IsNullOrWhiteSpace(token));
+		var transactionId = Regex.Match(
+			html,
+			"name=\"TransactionId\"[^>]*value=\"([A-Fa-f0-9-]+)\"")
+			.Groups[1].Value;
+		Assert.True(Guid.TryParse(transactionId, out var parsedTransactionId));
+		return (parsedTransactionId, token);
+	}
+
+	private static FormUrlEncodedContent CreateMixedBasketForm(
+		Guid transactionId,
+		string? token,
+		string weightKilograms = "3",
+		string goodsQuantity = "2")
+	{
+		var values = new List<KeyValuePair<string, string>>
+		{
+			new("TransactionId", transactionId.ToString()),
+			new("BranchCode", "BR01"),
+			new("GoodsSku", "BOX-01"),
+			new("GoodsQuantity", goodsQuantity),
+			new("IncludeShipping", "true"),
+			new("ShippingType", nameof(ShippingItemType.Parcel)),
+			new("WeightKilograms", weightKilograms),
+			new("LengthCm", "10"),
+			new("WidthCm", "20"),
+			new("HeightCm", "30"),
+			new("DestinationZone", "ZONE-A"),
+			new("ServiceLevel", nameof(ShippingServiceLevel.Standard))
+		};
+		if (token is not null)
+		{
+			values.Add(new(
+				"__RequestVerificationToken", token));
+		}
+
+		return new FormUrlEncodedContent(values);
 	}
 
 	private HttpClient CreateManagerClient()

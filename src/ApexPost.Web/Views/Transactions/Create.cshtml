@@ -1,0 +1,153 @@
+@model ApexPost.Web.Models.CreateTransactionViewModel
+@{
+    ViewData["Title"] = "Create transaction";
+}
+
+<h1>Create transaction</h1>
+
+<div asp-validation-summary="All" class="text-danger" role="alert"></div>
+
+@if (Model.Branches.Count == 0)
+{
+    <p class="alert alert-warning" role="status">
+        No active branches are available for transaction processing.
+    </p>
+}
+@if (Model.Products.Count == 0 && Model.ShippingRates.Count == 0)
+{
+    <p class="alert alert-warning" role="status">
+        No eligible goods or configured shipping rates are available.
+        Configure applicable transaction tax rates, inventory, and shipping rates first.
+    </p>
+}
+@if (!Model.CanSubmit && Model.Branches.Count > 0 &&
+     (Model.Products.Count > 0 || Model.ShippingRates.Count > 0))
+{
+    <p class="alert alert-warning" role="status">
+        Configure transaction tax rates before processing transactions.
+    </p>
+}
+
+<form asp-controller="Transactions" asp-action="Create" method="post">
+    <input asp-for="TransactionId" type="hidden" />
+
+    <div class="mb-3">
+        <label asp-for="BranchCode" class="form-label">Processing branch</label>
+        <select asp-for="BranchCode" class="form-select">
+            <option value="">Select a branch</option>
+            @foreach (var branch in Model.Branches)
+            {
+                <option value="@branch.Code.Value">@branch.Name (@branch.Code.Value)</option>
+            }
+        </select>
+        <span asp-validation-for="BranchCode" class="text-danger"></span>
+    </div>
+
+    <fieldset class="mb-4">
+        <legend>Goods (optional)</legend>
+        <div class="mb-3">
+            <label asp-for="GoodsSku" class="form-label">Product</label>
+            <select asp-for="GoodsSku" class="form-select">
+                <option value="">No goods</option>
+                @foreach (var product in Model.Products)
+                {
+                    <option value="@product.Sku.Value">
+                        @product.Name (@product.UnitPrice.Amount @product.UnitPrice.Currency)
+                    </option>
+                }
+            </select>
+        </div>
+        <div class="mb-3">
+            <label asp-for="GoodsQuantity" class="form-label">Quantity</label>
+            <input asp-for="GoodsQuantity" type="number" min="1" class="form-control" />
+            <span asp-validation-for="GoodsQuantity" class="text-danger"></span>
+        </div>
+    </fieldset>
+
+    <fieldset class="mb-4">
+        <legend>Shipping service (optional)</legend>
+        <div class="form-check mb-3">
+            <input asp-for="IncludeShipping" class="form-check-input" />
+            <label asp-for="IncludeShipping" class="form-check-label">
+                Include a shipping item
+            </label>
+        </div>
+        <div class="mb-3">
+            <label asp-for="ShippingType" class="form-label">Item type</label>
+            <select asp-for="ShippingType" class="form-select">
+                <option value="">Select a type</option>
+                @foreach (var itemType in Enum.GetValues<ApexPost.Domain.Enums.ShippingItemType>())
+                {
+                    <option value="@itemType">@itemType</option>
+                }
+            </select>
+            <span asp-validation-for="ShippingType" class="text-danger"></span>
+        </div>
+        <div class="mb-3">
+            <label asp-for="DestinationZone" class="form-label">Destination zone</label>
+            <select asp-for="DestinationZone" class="form-select">
+                <option value="">Select a configured destination</option>
+                @foreach (var zone in Model.ShippingRates
+                    .Select(rate => rate.DestinationZone)
+                    .Distinct(StringComparer.Ordinal))
+                {
+                    <option value="@zone">@zone</option>
+                }
+            </select>
+            <span asp-validation-for="DestinationZone" class="text-danger"></span>
+        </div>
+        <div class="mb-3">
+            <label asp-for="ServiceLevel" class="form-label">Service level</label>
+            <select asp-for="ServiceLevel" class="form-select">
+                <option value="">Select a configured service level</option>
+                @foreach (var level in Model.ShippingRates
+                    .Select(rate => rate.ServiceLevel)
+                    .Distinct())
+                {
+                    <option value="@level">@level</option>
+                }
+            </select>
+            <span asp-validation-for="ServiceLevel" class="text-danger"></span>
+        </div>
+        <div class="mb-3">
+            <label asp-for="WeightKilograms" class="form-label">Weight (kg)</label>
+            <input asp-for="WeightKilograms" type="number" min="0.001" step="any" class="form-control" />
+            <span asp-validation-for="WeightKilograms" class="text-danger"></span>
+        </div>
+        <div class="row">
+            <div class="col-md-4 mb-3">
+                <label asp-for="LengthCm" class="form-label">Length (cm)</label>
+                <input asp-for="LengthCm" type="number" min="0.001" step="any" class="form-control" />
+                <span asp-validation-for="LengthCm" class="text-danger"></span>
+            </div>
+            <div class="col-md-4 mb-3">
+                <label asp-for="WidthCm" class="form-label">Width (cm)</label>
+                <input asp-for="WidthCm" type="number" min="0.001" step="any" class="form-control" />
+                <span asp-validation-for="WidthCm" class="text-danger"></span>
+            </div>
+            <div class="col-md-4 mb-3">
+                <label asp-for="HeightCm" class="form-label">Height (cm)</label>
+                <input asp-for="HeightCm" type="number" min="0.001" step="any" class="form-control" />
+                <span asp-validation-for="HeightCm" class="text-danger"></span>
+            </div>
+        </div>
+        @if (Model.ShippingRates.Count > 0)
+        {
+            <h3>Configured shipping rates</h3>
+            <ul>
+                @foreach (var rate in Model.ShippingRates)
+                {
+                    <li>
+                        @rate.DestinationZone / @rate.ServiceLevel:
+                        @rate.BasePrice.Amount @rate.BasePrice.Currency base +
+                        @rate.PerKilogramCharge.Amount @rate.PerKilogramCharge.Currency per kg
+                    </li>
+                }
+            </ul>
+        }
+    </fieldset>
+
+    <button type="submit" class="btn btn-primary" disabled="@(!Model.CanSubmit)">
+        Process transaction
+    </button>
+</form>
