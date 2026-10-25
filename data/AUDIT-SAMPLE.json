@@ -1,0 +1,9 @@
+{
+  "timestampUtc": "2026-01-01T12:00:00+00:00",
+  "controller": "Transactions",
+  "action": "Create",
+  "outcome": "Succeeded",
+  "staffId": "demo-staff-01",
+  "branchCode": "DM01",
+  "correlationId": "sample-correlation-id"
+}

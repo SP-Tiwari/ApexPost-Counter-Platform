@@ -48,6 +48,9 @@ Thumbs.db
 # Local JSON persistence data
 /data/
 /src/ApexPost.Web/data/
+!/data/
+/data/*
+!/data/AUDIT-SAMPLE.json
 
 # Keep intentional source configuration files tracked
 # Do not add appsettings.json or appsettings.Development.json here.

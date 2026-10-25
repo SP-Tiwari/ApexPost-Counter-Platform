@@ -92,7 +92,7 @@ The Web project is the composition root for dependency injection and application
 
 The Application layer defines `IApexPostRepository`, which loads and replaces an `ApexPostSnapshot` whose collection membership is copied on construction (the Domain objects themselves remain mutable). `TransactionApplicationService` uses the abstraction's atomic `UpdateAsync` operation to create baskets, add line items, process sales, and authorize void/refund actions through existing Domain rules. `MixedBasketApplicationService` validates configured goods and shipping inputs, calculates shipping using persisted configured rates, invokes the parcel weight rule, and processes goods stock, total, payment, transaction branch attribution, shipping records, and basket persistence in one `UpdateAsync` operation. A failed validation or stock check prevents that update from being saved. It rejects duplicate transaction IDs, so a repeated form submission cannot deduct stock twice. Neither service supplies default tax rates or business values. `ApexPost.Infrastructure` implements the repository; Web registers the repository and application services in its composition root. Application code depends on the interface and Domain types, not JSON APIs.
 
-The JSON implementation stores one versioned `apexpost.json` document containing branches and counter terminals, staff, products, branch stock, shipping items and rates, money orders, identity-verification results, and transaction baskets including their IDs, processing branch, and associated shipping line metadata. Schemas 1 through 3 are migrated to version 4 on load: version 1 receives transaction IDs, older records default to no money-order verification association, and legacy baskets have no recorded branch or line-level shipping association. The storage directory is configured by `Storage:Directory`; the checked-in configuration uses the relative `data` directory, resolved against the Web content root. No seed data is created. Each processed money order embeds its optional identity-verification record as well as contributing that same masked verification to the report collection, preserving the association through JSON persistence. Reports are derived and are not stored as report snapshots. Low-stock and high-value notification rule results are transient; void/refund notifications are persisted with their basket status and reason.
+The JSON implementation stores one versioned `apexpost.json` document containing branches and counter terminals, staff, products, branch stock, shipping items and rates, money orders, identity-verification results, and transaction baskets including their IDs, processing branch, and associated shipping line metadata. Schemas 1 through 3 are migrated to version 4 on load: version 1 receives transaction IDs, older records default to no money-order verification association, and legacy baskets have no recorded branch or line-level shipping association. The storage directory is configured by `Storage:Directory`; the checked-in configuration uses the relative `data` directory, resolved against the Web content root. Demo data is not created by default. When `DemoData:Initialize` is explicitly enabled, `DemoDataInitializer` seeds a fictional snapshot only if every collection is empty, using the repository's atomic `UpdateAsync` operation. Its demo data contains no credentials, hashes, secrets, or full identity-document numbers. Each processed money order embeds its optional identity-verification record as well as contributing that same masked verification to the report collection, preserving the association through JSON persistence. Reports are derived and are not stored as report snapshots. Low-stock and high-value notification rule results are transient; void/refund notifications are persisted with their basket status and reason.
 
 Infrastructure uses persistence DTOs and reconstructs Domain objects through their validating constructors and state transitions. It does not deserialize directly into encapsulated entities. The basket reconstitution API validates line items, tax rates, payment state, and matching void/refund notification reason. Identity records persist only the masked identifier, never the original document number. Currency amounts, enum values, and nested data are validated during load.
 
@@ -246,22 +246,10 @@ The final solution must include meaningful business-rule tests and at least six 
 
 
 
-\## 13. Outstanding Design Artifacts
+\## 13. Design Artifacts and Known Limitations
 
+Architecture and middleware pipeline diagrams, three ADRs, C# 14 implementation evidence, and an audit sample matching the current `AuditRecord` schema are maintained under `docs/` and `data/`; see [docs/architecture.md](docs/architecture.md), [docs/csharp-14-evidence.md](docs/csharp-14-evidence.md), [docs/adr/](docs/adr/), and [data/AUDIT-SAMPLE.json](data/AUDIT-SAMPLE.json).
 
+Demo initialization is opt-in (`DemoData:Initialize`, default `false`) and runs only against an entirely empty snapshot. Seeded branch/staff/product labels and rates are fictional examples. Demo tax rates are zero-valued fixtures only. No demo credential, password hash, secret, parcel maximum, or money-order threshold is created. Demo staff cannot authenticate until an operator separately provisions credentials, and the demo credential file is not supplied.
 
-The following artifacts must be added and maintained as implementation progresses:
-
-
-
-\- Architecture and domain-model diagrams.
-
-\- Middleware pipeline diagram and ordering rationale.
-
-\- Architecture Decision Records (ADRs).
-
-\- Threat model and security mitigations.
-
-\- Audit sample data.
-
-\- Evidence of required C# 14 features and their justification.
+The current schema does not store transaction business dates. The 40 demo transactions are persisted paid baskets but cannot be treated as dated historical events. The original Week 2 assignment document was not present in the repository; rubric-specific counts and requirements beyond those quoted in the task remain unverified. The audit sample is one JSON object matching `AuditRecord`; the runtime append-only file is newline-delimited JSON.
