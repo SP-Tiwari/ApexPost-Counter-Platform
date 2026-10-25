@@ -86,7 +86,16 @@ public sealed class JsonAuditStoreTests : IAsyncLifetime
 			DateTimeOffset.UtcNow,
 			"AuditProbe",
 			action,
+			$"Executed AuditProbe.{action}",
 			"Succeeded",
+			200,
+			12.5,
+			new Dictionary<string, string>(StringComparer.Ordinal)
+			{
+				["controller"] = "AuditProbe",
+				["action"] = action
+			},
+			null,
 			null,
 			null,
 			null);
