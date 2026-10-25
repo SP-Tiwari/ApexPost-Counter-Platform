@@ -104,6 +104,27 @@ public sealed class ApiKeyAndIpRestrictionMiddlewareTests : IAsyncLifetime
 	}
 
 	[Fact]
+	public async Task ProtectedEndpoint_ExceedingValidatedPartnerLimit_ReturnsTooManyRequests()
+	{
+		await using var limitedFactory = CreateFactory(
+			"partner-rate-limit",
+			TestApiKey,
+			["192.0.2.10"],
+			partnerPermitLimit: 1);
+		using var client = limitedFactory.CreateClient();
+		client.DefaultRequestHeaders.Add("X-API-Key", TestApiKey);
+		client.DefaultRequestHeaders.Add("X-Partner-Id", "caller-controlled");
+
+		var firstResponse = await client.GetAsync(ProtectedPath);
+		var secondResponse = await client.GetAsync(ProtectedPath);
+
+		Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+		Assert.Equal(
+			HttpStatusCode.TooManyRequests,
+			secondResponse.StatusCode);
+	}
+
+	[Fact]
 	public async Task UnrelatedMvcRoute_DoesNotRequireApiKeyOrIpAllowlist()
 	{
 		using var client = _factory.CreateClient();
@@ -116,7 +137,9 @@ public sealed class ApiKeyAndIpRestrictionMiddlewareTests : IAsyncLifetime
 	private WebApplicationFactory<Program> CreateFactory(
 		string instanceName,
 		string? apiKey,
-		string[] allowedIpAddresses)
+		string[] allowedIpAddresses,
+		int partnerPermitLimit = 100,
+		int partnerWindowSeconds = 60)
 	{
 		var instanceDirectory = Path.Combine(_rootDirectory, instanceName);
 		Directory.CreateDirectory(instanceDirectory);
@@ -133,6 +156,12 @@ public sealed class ApiKeyAndIpRestrictionMiddlewareTests : IAsyncLifetime
 				builder.UseSetting(
 					"ApiSecurity:ProtectedPathPrefixes:0",
 					"/__test/partner");
+				builder.UseSetting(
+					"ApiSecurity:PartnerRateLimit:PermitLimit",
+					partnerPermitLimit.ToString());
+				builder.UseSetting(
+					"ApiSecurity:PartnerRateLimit:WindowSeconds",
+					partnerWindowSeconds.ToString());
 				if (apiKey is not null)
 				{
 					builder.UseSetting("ApiSecurity:ApiKey", apiKey);

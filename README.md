@@ -16,7 +16,8 @@ ApexPost is a .NET 10 / C# 14 ASP.NET Core MVC application for postal branch cou
 - Transaction lists, details, voids, and refunds are limited to the active Branch Manager's persisted home branch. Legacy transactions with no branch attribution are not exposed.
 - Money orders use an explicitly configured high-value threshold. High-value orders require successful manager-attested, in-person identity verification; only a masked document identifier is retained.
 - Staff sign-in uses a separately provisioned JSON credential file and secure cookie authentication. Demo data does not create credentials or enable sign-in.
-- The Web pipeline includes correlation IDs, exception handling with Problem Details, security headers, maintenance mode, configured API-key/IP restrictions, rate limiting, authentication, authorization, and MVC action auditing.
+- The Web pipeline includes correlation IDs, exception handling with Problem Details, security headers, maintenance mode, configured API-key/IP restrictions, staff and partner rate limiting, authentication, authorization, and MVC action auditing. `/health` returns a non-sensitive liveness response.
+- Parcel-tracking CORS is restricted to exact deployment-configured origins, allows read-only GET requests, and does not allow credentials. No tracking-status endpoint is implemented because persisted shipping data has no tracking state or event history.
 - JSON snapshot persistence validates domain data, supports schema migration, and uses atomic updates within a repository instance.
 
 ## Configuration
@@ -33,6 +34,8 @@ Production operators must explicitly provide business configuration as applicabl
 - partner API key and protected-IP configuration, supplied outside source control
 
 No production prices, tax rates, parcel limits, or money-order thresholds are supplied as defaults. Missing required settings fail closed for the affected workflow.
+
+Partner integration prefixes are opt-in through `ApiSecurity:ProtectedPathPrefixes`. When any are configured, set positive `ApiSecurity:PartnerRateLimit:PermitLimit` and `ApiSecurity:PartnerRateLimit:WindowSeconds` values; startup rejects missing or invalid limits. Requests must first pass the existing API-key and IP checks, then share a fixed-window bucket keyed by the SHA-256 digest of the validated API key. The current configuration supports one shared API key, so it provides one partner bucket rather than separate buckets for distinct partners. Client-supplied partner identity headers are ignored. `ParcelTracking:AllowedOrigins` is an exact-origin array; it defaults to empty (no cross-origin access) and must be populated by deployment configuration with the approved HTTP or HTTPS origin. Wildcards and credentialed CORS are not supported.
 
 ### Optional fictional demo data
 

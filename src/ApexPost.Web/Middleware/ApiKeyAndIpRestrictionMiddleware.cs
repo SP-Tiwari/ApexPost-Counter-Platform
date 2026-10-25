@@ -53,6 +53,9 @@ public sealed class ApiKeyAndIpRestrictionMiddleware
 			return;
 		}
 
+		context.Items[PartnerRateLimitingMiddleware.PartnerIdentityItemKey] =
+			Convert.ToHexString(_expectedApiKeyHash);
+
 		await _next(context);
 	}
 
