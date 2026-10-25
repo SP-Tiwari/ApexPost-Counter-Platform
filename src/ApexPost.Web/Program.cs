@@ -78,6 +78,7 @@ if (!Path.IsPathRooted(storageDirectory))
 
 builder.Services.AddSingleton<IApexPostRepository>(
 	_ => new JsonApexPostRepository(storageDirectory));
+builder.Services.AddSingleton<DemoDataInitializer>();
 
 var credentialFile =
 	builder.Configuration["Authentication:CredentialFile"];
@@ -248,6 +249,13 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+
+if (app.Configuration.GetValue<bool>("DemoData:Initialize"))
+{
+	await app.Services
+		.GetRequiredService<DemoDataInitializer>()
+		.InitializeAsync();
+}
 
 // Configure the HTTP request pipeline.
 app.UseMiddleware<CorrelationIdMiddleware>();
