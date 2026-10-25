@@ -10,13 +10,21 @@ using ApexPost.Web.Authentication;
 using ApexPost.Web.Filters;
 using ApexPost.Web.Middleware;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Mvc;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllersWithViews(options =>
-	options.Filters.AddService<AuditActionFilter>());
+{
+	options.Filters.AddService<AuditActionFilter>();
+	options.Filters.AddService<ValidationActionFilter>();
+	options.Filters.AddService<PerformanceActionFilter>();
+});
+
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+	options.SuppressModelStateInvalidFilter = true);
 
 builder.Services.AddProblemDetails(options =>
 {
@@ -103,6 +111,19 @@ builder.Services.AddScoped<TransactionApplicationService>();
 builder.Services.AddScoped<StaffAuthenticationService>();
 builder.Services.AddScoped<StaffCookieAuthenticationEvents>();
 builder.Services.AddScoped<AuditActionFilter>();
+builder.Services.AddScoped<ValidationActionFilter>();
+
+var slowActionThresholdMilliseconds = builder.Configuration.GetValue<double>(
+	"Performance:SlowActionThresholdMilliseconds", 500d);
+var slowActionThreshold = PerformanceActionFilter.ParseThresholdMilliseconds(
+	slowActionThresholdMilliseconds);
+
+builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.AddScoped<PerformanceActionFilter>(services =>
+	new PerformanceActionFilter(
+		slowActionThreshold,
+		services.GetRequiredService<TimeProvider>(),
+		services.GetRequiredService<ILogger<PerformanceActionFilter>>()));
 
 var moneyOrderThresholdAmount =
 	builder.Configuration["MoneyOrders:HighValueThreshold:Amount"];

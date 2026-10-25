@@ -403,6 +403,36 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	}
 
 	[Fact]
+	public async Task CreateTransaction_InvalidMvcForm_RedisplaysViewAndValidationMessage()
+	{
+		await SeedMixedBasketDataAsync();
+		using var client = CreateManagerClient();
+		var (transactionId, token) =
+			await GetCreateFormIdentityAsync(client);
+		using var form = new FormUrlEncodedContent(
+		[
+			new("__RequestVerificationToken", token),
+			new("TransactionId", transactionId.ToString()),
+			new("IncludeShipping", "false")
+		]);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create", form);
+
+		Assert.Equal(
+			System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+		var html = await response.Content.ReadAsStringAsync();
+		Assert.Contains("<h1>Create transaction</h1>", html, StringComparison.Ordinal);
+		Assert.Contains(
+			"Add at least one goods item or shipping service.",
+			html,
+			StringComparison.Ordinal);
+		Assert.Empty((await GetRepositoryAsync()).TransactionBaskets);
+		Assert.Equal(4, Assert.Single(
+			(await GetRepositoryAsync()).BranchStocks).Quantity);
+	}
+
+	[Fact]
 	public async Task CreateTransaction_RejectsMixedCurrencies()
 	{
 		await SeedMixedBasketDataAsync(new ShippingRate(

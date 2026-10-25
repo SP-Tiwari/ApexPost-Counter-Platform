@@ -186,15 +186,11 @@ Secrets must be provided through configuration or an appropriate secret store ra
 
 
 
-Middleware will handle cross-cutting HTTP concerns such as exception handling, correlation IDs, request timing, maintenance mode, and security headers.
+Middleware handles HTTP request/response concerns that apply before MVC action selection or across non-MVC endpoints, including exception handling, correlation IDs, request timing, maintenance mode, and security headers. It is intentionally not responsible for MVC model validation or timing an individual controller action: at that layer MVC has not exposed the bound `ModelState`, selected action metadata, or action execution boundary.
 
+MVC action filters run around selected MVC actions and can inspect the bound model state, controller/action metadata, and action completion. `AuditActionFilter` continues to append business-action records through the existing `IAuditStore`; `ValidationActionFilter` converts invalid model state to a validation problem response for `[ApiController]` endpoints while leaving regular MVC form actions to preserve their existing validation messages and view reconstruction; `PerformanceActionFilter` measures action execution only. This separation keeps action-specific concerns in MVC and request-wide concerns in middleware. Request timing and action timing measure different portions of the lifecycle and should not be conflated.
 
-
-MVC action filters will handle action-level concerns such as business-action auditing, validation behavior, and slow-action warnings.
-
-
-
-Request timing and action timing measure different parts of the request lifecycle and should be logged separately where useful.
+`Performance:SlowActionThresholdMilliseconds` configures the slow-action warning threshold. The checked-in operational starting value is 500 ms; it is not a business rule and may be overridden by deployment configuration (for example, `Performance__SlowActionThresholdMilliseconds`). The value must convert to a positive `TimeSpan`: zero, negative, NaN, infinite, values too small to survive `TimeSpan` tick precision, and values outside the representable `TimeSpan` range fail during startup service configuration. These limits are technical representability requirements, not business thresholds. An action is warned when its measured execution time is greater than the configured threshold. Structured warning fields include controller, action, elapsed milliseconds, and threshold milliseconds; request parameters, model values, identity claims, and exception details are excluded.
 
 
 
