@@ -68,6 +68,62 @@ public sealed class TransactionApplicationServiceTests
 	}
 
 	[Fact]
+	public async Task MixedBasket_ActiveCounterClerkCanProcessSaleAtHomeBranch()
+	{
+		var repository = CreateMixedBasketRepository();
+		var service = CreateMixedBasketService(repository);
+		var transactionId = Guid.NewGuid();
+
+		await service.CreateAndProcessAsync(
+			transactionId,
+			"clerk-1",
+			[new GoodsBasketRequest(ProductSku.Value, 2)],
+			[]);
+
+		var snapshot = await repository.LoadAsync();
+		var basket = Assert.Single(snapshot.TransactionBaskets);
+		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Equal(BranchOne, basket.BranchCode);
+		Assert.Equal(2, Assert.Single(snapshot.BranchStocks).Quantity);
+	}
+
+	[Fact]
+	public async Task MixedBasket_InactiveCounterClerkCannotProcessSale()
+	{
+		var repository = CreateMixedBasketRepository(deactivateClerk: true);
+		var service = CreateMixedBasketService(repository);
+
+		await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+			service.CreateAndProcessAsync(
+				Guid.NewGuid(),
+				"clerk-1",
+				[new GoodsBasketRequest(ProductSku.Value, 1)],
+				[]));
+
+		var snapshot = await repository.LoadAsync();
+		Assert.Empty(snapshot.TransactionBaskets);
+		Assert.Equal(4, Assert.Single(snapshot.BranchStocks).Quantity);
+	}
+
+	[Fact]
+	public async Task MixedBasket_ClosedBranchCannotAcceptCounterClerkSale()
+	{
+		var repository = CreateMixedBasketRepository(closeHomeBranch: true);
+		var service = CreateMixedBasketService(repository);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				Guid.NewGuid(),
+				"clerk-1",
+				[new GoodsBasketRequest(ProductSku.Value, 1)],
+				[]));
+
+		var snapshot = await repository.LoadAsync();
+		Assert.Empty(snapshot.TransactionBaskets);
+		Assert.Equal(4, Assert.Single(snapshot.BranchStocks).Quantity);
+	}
+
+	[Fact]
 	public async Task MixedBasket_ParcelOverConfiguredWeightDoesNotPersistOrDeductStock()
 	{
 		var repository = CreateMixedBasketRepository();
@@ -215,7 +271,7 @@ public sealed class TransactionApplicationServiceTests
 		await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
 			service.CreateAndProcessAsync(
 				Guid.NewGuid(),
-				"clerk-1",
+				"unknown-staff",
 				[new GoodsBasketRequest(ProductSku.Value, 1)],
 				[]));
 
@@ -491,9 +547,15 @@ public sealed class TransactionApplicationServiceTests
 	}
 
 	private static InMemoryApexPostRepository CreateMixedBasketRepository(
-		ShippingRate? shippingRate = null)
+		ShippingRate? shippingRate = null,
+		bool deactivateClerk = false,
+		bool closeHomeBranch = false)
 	{
 		var snapshot = CreateSnapshot();
+		if (deactivateClerk)
+			snapshot.Staff.Single(staff => staff.Id == "clerk-1").Deactivate();
+		if (closeHomeBranch)
+			snapshot.Branches.Single(branch => branch.Code == BranchOne).Close();
 		return new InMemoryApexPostRepository(new ApexPostSnapshot(
 			snapshot.Branches,
 			snapshot.Staff,

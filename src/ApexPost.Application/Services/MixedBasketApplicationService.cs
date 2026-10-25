@@ -75,7 +75,7 @@ public sealed class MixedBasketApplicationService
 	{
 		var snapshot = await _repository.LoadAsync(cancellationToken)
 			.ConfigureAwait(false);
-		var staff = FindActiveBranchManager(snapshot, staffId);
+		var staff = FindActiveSalesStaff(snapshot, staffId);
 		var branch = FindBranch(snapshot, staff.HomeBranchCode);
 		if (!branch.IsActive)
 			throw new InvalidOperationException(
@@ -141,7 +141,7 @@ public sealed class MixedBasketApplicationService
 					"This transaction submission has already been processed.");
 			}
 
-			var staff = FindActiveBranchManager(snapshot, staffId);
+			var staff = FindActiveSalesStaff(snapshot, staffId);
 			var branch = FindBranch(snapshot, staff.HomeBranchCode);
 			var basket = new TransactionBasket(
 				transactionId,
@@ -274,7 +274,7 @@ public sealed class MixedBasketApplicationService
 		};
 	}
 
-	private static Staff FindActiveBranchManager(
+	private static Staff FindActiveSalesStaff(
 		ApexPostSnapshot snapshot,
 		string staffId)
 	{
@@ -286,10 +286,11 @@ public sealed class MixedBasketApplicationService
 			.Take(2).ToArray();
 		if (matches.Length != 1 ||
 			!matches[0].IsActive ||
-			matches[0].Role != StaffRole.BranchManager)
+			matches[0].Role is not StaffRole.CounterClerk and
+				not StaffRole.BranchManager)
 		{
 			throw new UnauthorizedAccessException(
-				"An active Branch Manager is required to process transactions.");
+				"An active Counter Clerk or Branch Manager is required to process transactions.");
 		}
 
 		return matches[0];

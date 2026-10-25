@@ -134,6 +134,7 @@ builder.Services.AddSingleton<IStaffCredentialRepository>(
 	_ => new JsonStaffCredentialRepository(credentialFile));
 
 builder.Services.AddScoped<TransactionApplicationService>();
+builder.Services.AddScoped<StockAdjustmentApplicationService>();
 builder.Services.AddScoped<StaffAuthenticationService>();
 builder.Services.AddScoped<StaffCookieAuthenticationEvents>();
 builder.Services.AddScoped<AuditActionFilter>();

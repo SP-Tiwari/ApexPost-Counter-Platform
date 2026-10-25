@@ -1,0 +1,66 @@
+@model ApexPost.Web.Models.StockAdjustmentViewModel
+
+@{
+    ViewData["Title"] = "Adjust stock";
+}
+
+<h1>Adjust stock</h1>
+
+@if (TempData["StockAdjustmentStatus"] is string statusMessage)
+{
+    <div class="alert alert-success" role="status">@statusMessage</div>
+}
+
+<p>Authorized branch: @Model.BranchName (@Model.BranchCode)</p>
+<div asp-validation-summary="All" class="text-danger" role="alert"></div>
+
+<form asp-controller="Stock" asp-action="Adjust" method="post">
+    <div class="mb-3">
+        <label asp-for="ProductSku" class="form-label">Product</label>
+        <select asp-for="ProductSku" class="form-select">
+            <option value="">Select a product</option>
+            @foreach (var stock in Model.BranchStocks)
+            {
+                <option value="@stock.ProductSku.Value">
+                    @stock.ProductSku.Value (current quantity: @stock.Quantity)
+                </option>
+            }
+        </select>
+        <span asp-validation-for="ProductSku" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="QuantityChange" class="form-label">
+            Quantity change
+        </label>
+        <input asp-for="QuantityChange" type="number" step="1" class="form-control" />
+        <span class="form-text">Use a positive value to add stock or a negative value to remove stock.</span>
+        <span asp-validation-for="QuantityChange" class="text-danger"></span>
+    </div>
+    <button type="submit" class="btn btn-primary">Apply adjustment</button>
+</form>
+
+<h2 class="mt-4">Current branch stock</h2>
+@if (Model.BranchStocks.Count == 0)
+{
+    <p>No stock records exist for this branch.</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Product SKU</th>
+                <th>Quantity</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var stock in Model.BranchStocks)
+            {
+                <tr>
+                    <td>@stock.ProductSku.Value</td>
+                    <td>@stock.Quantity</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}

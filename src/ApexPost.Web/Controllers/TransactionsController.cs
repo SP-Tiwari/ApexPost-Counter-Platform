@@ -2,7 +2,8 @@ using ApexPost.Domain.Notifications;
 
 namespace ApexPost.Web.Controllers;
 
-[Authorize(Roles = nameof(StaffRole.BranchManager))]
+[Authorize(Roles =
+	nameof(StaffRole.BranchManager) + "," + nameof(StaffRole.CounterClerk))]
 [Route("[controller]")]
 public sealed class TransactionsController : Controller
 {
@@ -20,6 +21,7 @@ public sealed class TransactionsController : Controller
 	}
 
 	[HttpGet]
+	[Authorize(Roles = nameof(StaffRole.BranchManager))]
 	public async Task<IActionResult> Index(CancellationToken cancellationToken)
 	{
 		var staffId = User.FindFirst("StaffId")?.Value;
@@ -76,6 +78,11 @@ public sealed class TransactionsController : Controller
 		catch (UnauthorizedAccessException)
 		{
 			return Forbid();
+		}
+		catch (InvalidOperationException)
+		{
+			return Conflict(
+				"Transactions cannot be processed at the assigned branch.");
 		}
 	}
 
@@ -219,6 +226,7 @@ public sealed class TransactionsController : Controller
 	}
 
 	[HttpGet("{transactionId:guid}")]
+	[Authorize(Roles = nameof(StaffRole.BranchManager))]
 	public async Task<IActionResult> Details(
 		Guid transactionId,
 		CancellationToken cancellationToken)
@@ -243,6 +251,7 @@ public sealed class TransactionsController : Controller
 	}
 
 	[HttpPost("{transactionId:guid}/void")]
+	[Authorize(Roles = nameof(StaffRole.BranchManager))]
 	[ValidateAntiForgeryToken]
 	public Task<IActionResult> Void(
 		Guid transactionId,
@@ -256,6 +265,7 @@ public sealed class TransactionsController : Controller
 			cancellationToken);
 
 	[HttpPost("{transactionId:guid}/refund")]
+	[Authorize(Roles = nameof(StaffRole.BranchManager))]
 	[ValidateAntiForgeryToken]
 	public Task<IActionResult> Refund(
 		Guid transactionId,
