@@ -91,7 +91,7 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 	}
 
 	[Fact]
-	public async Task Create_FailedIdentityCheckRejectsOrderWithoutPersistence()
+	public async Task Create_FailedIdentityCheckBelowThresholdPersistsOrder()
 	{
 		await SeedManagerAsync();
 		using var client = CreateClient("BranchManager");
@@ -101,13 +101,14 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 			"/MoneyOrders/Create",
 			CreateForm(500m, true, false, token));
 
-		Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-		Assert.Contains(
-			"Identity verification did not succeed",
-			await response.Content.ReadAsStringAsync(),
-			StringComparison.Ordinal);
-		Assert.Empty((await LoadSnapshotAsync()).MoneyOrders);
-		Assert.Empty((await LoadSnapshotAsync()).IdentityVerifications);
+		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+		Assert.Equal("/MoneyOrders/Index", response.Headers.Location?.OriginalString);
+		var snapshot = await LoadSnapshotAsync();
+		var order = Assert.Single(snapshot.MoneyOrders);
+		Assert.Equal(new Money(500m, "INR"), order.Amount);
+		Assert.NotNull(order.IdentityVerification);
+		Assert.False(order.IdentityVerification!.IsSuccessful);
+		Assert.Equal(order.IdentityVerification, Assert.Single(snapshot.IdentityVerifications));
 	}
 
 	[Fact]

@@ -74,6 +74,22 @@ public sealed class MoneyOrderApplicationServiceTests
 	}
 
 	[Fact]
+	public async Task CreateAndProcessAsync_AtThresholdWithoutVerification_PersistsOrder()
+	{
+		var repository = new InMemoryApexPostRepository(CreateSnapshot());
+		var service = new MoneyOrderApplicationService(repository, Threshold);
+
+		await service.CreateAndProcessAsync(
+			"manager-1", 1000m, "Sender", "Recipient", 10m, null);
+
+		var snapshot = await repository.LoadAsync();
+		var order = Assert.Single(snapshot.MoneyOrders);
+		Assert.Equal(new Money(1000m, "INR"), order.Amount);
+		Assert.Null(order.IdentityVerification);
+		Assert.Empty(snapshot.IdentityVerifications);
+	}
+
+	[Fact]
 	public async Task CreateAndProcessAsync_HighValueSuccessfulCheckPersistsMaskedVerificationWithOrder()
 	{
 		var repository = new InMemoryApexPostRepository(CreateSnapshot());
@@ -96,6 +112,24 @@ public sealed class MoneyOrderApplicationServiceTests
 	}
 
 	[Fact]
+	public async Task CreateAndProcessAsync_HighValueFailedVerificationRejectsWithoutPersisting()
+	{
+		var repository = new InMemoryApexPostRepository(CreateSnapshot());
+		var service = new MoneyOrderApplicationService(repository, Threshold);
+		var verification = new IdentityVerification(
+			"Passport", "ABCD1234", isSuccessful: false);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.CreateAndProcessAsync(
+				"manager-1", 1000.01m, "Sender", "Recipient", 10m,
+				verification));
+
+		var snapshot = await repository.LoadAsync();
+		Assert.Empty(snapshot.MoneyOrders);
+		Assert.Empty(snapshot.IdentityVerifications);
+	}
+
+	[Fact]
 	public async Task CreateAndProcessAsync_HighValueWithoutVerificationRejectsWithoutPersisting()
 	{
 		var repository = new InMemoryApexPostRepository(CreateSnapshot());
@@ -111,19 +145,21 @@ public sealed class MoneyOrderApplicationServiceTests
 	}
 
 	[Fact]
-	public async Task CreateAndProcessAsync_FailedVerificationRejectsEvenLowValueOrder()
+	public async Task CreateAndProcessAsync_FailedVerificationBelowThresholdPersistsOrderAndVerification()
 	{
 		var repository = new InMemoryApexPostRepository(CreateSnapshot());
 		var service = new MoneyOrderApplicationService(repository, Threshold);
 		var verification = new IdentityVerification(
 			"Passport", "ABCD1234", isSuccessful: false);
 
-		await Assert.ThrowsAsync<InvalidOperationException>(() =>
-			service.CreateAndProcessAsync(
-				"manager-1", 500m, "Sender", "Recipient", 10m,
-				verification));
+		await service.CreateAndProcessAsync(
+			"manager-1", 500m, "Sender", "Recipient", 10m,
+			verification);
 
-		Assert.Empty((await repository.LoadAsync()).MoneyOrders);
+		var snapshot = await repository.LoadAsync();
+		var order = Assert.Single(snapshot.MoneyOrders);
+		Assert.Same(verification, order.IdentityVerification);
+		Assert.Equal(verification, Assert.Single(snapshot.IdentityVerifications));
 	}
 
 	[Fact]

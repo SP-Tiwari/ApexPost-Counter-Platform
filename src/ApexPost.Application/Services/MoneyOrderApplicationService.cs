@@ -67,10 +67,6 @@ public sealed class MoneyOrderApplicationService
 				staff.HomeBranchCode);
 			_verificationRule.EnsureVerification(moneyOrder, verification);
 
-			if (verification is { IsSuccessful: false })
-				throw new InvalidOperationException(
-					"Identity verification was not successful.");
-
 			var updatedVerifications = verification is null
 				? snapshot.IdentityVerifications
 				: snapshot.IdentityVerifications.Append(verification);
