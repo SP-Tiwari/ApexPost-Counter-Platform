@@ -12,6 +12,8 @@ ApexPost is a .NET 10 / C# 14 ASP.NET Core MVC application for postal branch cou
 
 ## Implemented workflows and protections
 
+- Administrators can add branches (with their first counter), add staff, add catalogue products, and close or reopen branches through the protected Administration page. These master-data actions remain behind application services and JSON repository abstractions.
+
 - Goods and shipping can be processed in one transaction. Stock, configured shipping rates, parcel limits, tax configuration, branch attribution, and duplicate submission checks are applied before persistence.
 - Active Counter Clerks and Branch Managers can process sales at their persisted home branch. Active Branch Managers can adjust stock at their home branch through an audited workflow.
 - Transaction lists, details, voids, and refunds are limited to the active Branch Manager's persisted home branch. Legacy transactions with no branch attribution are not exposed.
@@ -43,9 +45,53 @@ Partner integration prefixes are opt-in through `ApiSecurity:ProtectedPathPrefix
 
 Set `DemoData:Initialize` to `true` to initialize an entirely empty JSON snapshot with fictional demo branches, staff records, products, stock, shipping rates, and paid transaction baskets. The setting defaults to `false`. Initialization uses the repository's locked `UpdateAsync` operation and only writes when every snapshot collection is empty; it does not merge demo values into an existing store. Turn the setting off after initialization.
 
-All seeded people and business values are explicitly marked or named `DEMO`. The seed contains no passwords, password hashes, secrets, or identity-document numbers. Demo staff cannot sign in; any real staff credential must be provisioned separately through the configured protected credential file. Demo prices and zero tax rates are examples only and must not be used as production business values. Demo parcel limits and money-order thresholds are not seeded.
+All seeded people and business values are explicitly marked or named `DEMO`. The runtime initializer seed contains no passwords, password hashes, secrets, or identity-document numbers. Demo staff cannot sign in through runtime initialization alone; any real staff credential must be provisioned separately through the configured protected credential file. Demo prices and zero tax rates are examples only and must not be used as production business values. Demo parcel limits and money-order thresholds are not seeded.
 
 The repository's transaction schema has no transaction business date. The 40 demo baskets are persisted in `Paid` state but cannot be assigned verifiable historical dates without a schema change. The original assignment document was not present in this checkout, so rubric counts beyond those explicitly supplied in the task remain unverified.
+
+## Seed Data and App_Data
+
+The Web project now contains inspectable seed-data artifacts at:
+
+- `src/ApexPost.Web/App_Data/SeedData/`
+
+Current files and purposes:
+
+- `branches.json` - sample branch master records (`code`, `name`, `region`, `openingHours`, `isActive`).
+- `counters.json` - sample counter records mapped to branch codes.
+- `staff.json` - sample staff profiles (IDs, names, emails, roles, home branch, active status).
+- `staff-credentials.json` - sample credential document in the existing authentication schema (`schemaVersion`, `credentials`) using salted password hashes only.
+- `products.json` - sample product catalog records (SKU, name, category, unit price, tax category).
+- `inventory.json` - sample branch/product stock entries.
+- `counter-transactions.json` - sample transaction-like records for manual inspection.
+- `apexpost-demo-seed.json` - seed manifest/metadata file describing seed artifacts.
+
+Current status and limitations:
+
+- These files are currently **viewable seed-data samples only**.
+- `DemoDataInitializer` is still C#-driven and does **not** load from `App_Data/SeedData` yet.
+- Runtime operational persistence still follows configured repository paths (`Storage:Directory` for `apexpost.json`, `Authentication:CredentialFile` for credentials).
+- Keep all business changes flowing through Application services and repository abstractions, not by manual edits to runtime store files.
+
+Record counts currently present in the seed files:
+
+- `branches.json`: 5
+- `counters.json`: 10
+- `staff.json`: 20
+- `staff-credentials.json` credentials: 4
+- `products.json`: 30
+- `inventory.json`: 25
+- `counter-transactions.json`: 10
+
+To inspect these files:
+
+- In Visual Studio/VS Code: open `src/ApexPost.Web/App_Data/SeedData` from Solution Explorer/Explorer.
+- In File Explorer: open `<repo-root>\src\ApexPost.Web\App_Data\SeedData`.
+
+Security notes:
+
+- `App_Data` is outside `wwwroot`; do not expose these files through static-file hosting or unrestricted endpoints.
+- Never store plaintext passwords, production secrets, API keys, card data, or full identity-document numbers in seed JSON.
 
 ## Documentation and sample records
 
