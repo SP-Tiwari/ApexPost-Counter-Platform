@@ -135,6 +135,7 @@ builder.Services.AddSingleton<IStaffCredentialRepository>(
 
 builder.Services.AddScoped<TransactionApplicationService>();
 builder.Services.AddScoped<StockAdjustmentApplicationService>();
+builder.Services.AddScoped<AdministrationApplicationService>();
 builder.Services.AddScoped<StaffAuthenticationService>();
 builder.Services.AddScoped<StaffCookieAuthenticationEvents>();
 builder.Services.AddScoped<AuditActionFilter>();

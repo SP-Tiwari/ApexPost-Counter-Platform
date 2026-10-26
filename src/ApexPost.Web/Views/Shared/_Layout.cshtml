@@ -65,6 +65,12 @@
                                 <a class="nav-link text-dark" asp-controller="Reports" asp-action="ShippingVolume">Shipping volume report</a>
                             </li>
                         }
+                        @if (User.IsInRole("Administrator"))
+                        {
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-controller="Administration" asp-action="Index">Administration</a>
+                            </li>
+                        }
                     </ul>
                     @if (User.Identity?.IsAuthenticated == true)
                     {
