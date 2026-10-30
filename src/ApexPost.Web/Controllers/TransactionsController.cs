@@ -1,27 +1,44 @@
+using ApexPost.Application.Verification;
 using ApexPost.Domain.Notifications;
+using ApexPost.Web.Filters;
+using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace ApexPost.Web.Controllers;
 
 [Authorize(Roles =
 	nameof(StaffRole.BranchManager) + "," + nameof(StaffRole.CounterClerk))]
 [Route("[controller]")]
-public sealed class TransactionsController : Controller
+public sealed class TransactionsController : Controller, IInvalidModelStateHandler
 {
 	private readonly TransactionApplicationService _transactions;
 	private readonly MixedBasketApplicationService _mixedBaskets;
+	private readonly IAuthorizationService _authorization;
 
 	public TransactionsController(
 		TransactionApplicationService transactions,
-		MixedBasketApplicationService mixedBaskets)
+		MixedBasketApplicationService mixedBaskets,
+		IAuthorizationService authorization)
 	{
 		ArgumentNullException.ThrowIfNull(transactions);
 		ArgumentNullException.ThrowIfNull(mixedBaskets);
+		ArgumentNullException.ThrowIfNull(authorization);
 		_transactions = transactions;
 		_mixedBaskets = mixedBaskets;
+		_authorization = authorization;
 	}
 
+	// SameBranchOnly, applied once the transaction's branch is known. The
+	// application service already scopes reads to the staff member's branch;
+	// this is a second, policy-based check at the web boundary.
+	private async Task<bool> IsSameBranchAsync(string? branchCode) =>
+		branchCode is not null &&
+		(await _authorization.AuthorizeAsync(
+			User,
+			new BranchCode(branchCode),
+			ApexPostPolicies.SameBranchOnly)).Succeeded;
+
 	[HttpGet]
-	[Authorize(Roles = nameof(StaffRole.BranchManager))]
+	[Authorize(Policy = ApexPostPolicies.BranchManagerOnly)]
 	public async Task<IActionResult> Index(CancellationToken cancellationToken)
 	{
 		var staffId = User.FindFirst("StaffId")?.Value;
@@ -88,6 +105,7 @@ public sealed class TransactionsController : Controller
 
 	[HttpPost("Create")]
 	[ValidateAntiForgeryToken]
+	[Audited]
 	public async Task<IActionResult> Create(
 		CreateTransactionViewModel model,
 		CancellationToken cancellationToken)
@@ -95,16 +113,44 @@ public sealed class TransactionsController : Controller
 		if (model.TransactionId == Guid.Empty)
 			ModelState.AddModelError(
 				nameof(model.TransactionId), "A transaction ID is required.");
+		else
+			AuditActionFilter.AddAuditValue(
+				HttpContext, "transactionId", model.TransactionId.ToString());
 
-		var hasGoods = !string.IsNullOrWhiteSpace(model.GoodsSku);
-		if (hasGoods && model.GoodsQuantity is not > 0)
+		// Goods rows arrive as parallel GoodsSku/GoodsQuantity lists; rows with
+		// neither a product nor a quantity are blank and ignored.
+		var goodsLines = new List<GoodsBasketRequest>();
+		var hasGoods = false;
+		var goodsRowCount = Math.Max(
+			model.GoodsSku.Count, model.GoodsQuantity.Count);
+		for (var row = 0; row < goodsRowCount; row++)
+		{
+			var sku = row < model.GoodsSku.Count ? model.GoodsSku[row] : null;
+			var quantity = row < model.GoodsQuantity.Count
+				? model.GoodsQuantity[row]
+				: null;
+			if (string.IsNullOrWhiteSpace(sku) && quantity is null)
+				continue;
+
+			hasGoods = true;
+			if (string.IsNullOrWhiteSpace(sku))
+				ModelState.AddModelError(
+					nameof(model.GoodsSku),
+					$"Goods line {row + 1}: select a product.");
+			else if (quantity is not > 0)
+				ModelState.AddModelError(
+					nameof(model.GoodsQuantity),
+					$"Goods line {row + 1}: quantity must be greater than zero.");
+			else
+				goodsLines.Add(new GoodsBasketRequest(sku, quantity.Value));
+		}
+
+		if (string.IsNullOrWhiteSpace(model.CounterTerminalId))
 			ModelState.AddModelError(
-				nameof(model.GoodsQuantity),
-				"Goods quantity must be greater than zero.");
-		if (!hasGoods && model.GoodsQuantity.HasValue)
+				nameof(model.CounterTerminalId), "Select a counter terminal.");
+		if (string.IsNullOrWhiteSpace(model.PaymentMethod))
 			ModelState.AddModelError(
-				nameof(model.GoodsSku),
-				"Select a product when specifying a goods quantity.");
+				nameof(model.PaymentMethod), "Select a payment method.");
 
 		ShippingBasketRequest? shippingRequest = null;
 		if (model.IncludeShipping)
@@ -151,10 +197,44 @@ public sealed class TransactionsController : Controller
 			}
 		}
 
-		if (!hasGoods && !model.IncludeShipping)
+		MoneyOrderBasketRequest? moneyOrderRequest = null;
+		if (model.IncludeMoneyOrder)
+		{
+			if (model.MoneyOrderAmount is not > 0m)
+				ModelState.AddModelError(
+					nameof(model.MoneyOrderAmount),
+					"Enter a money-order amount greater than zero.");
+			if (string.IsNullOrWhiteSpace(model.MoneyOrderSender))
+				ModelState.AddModelError(
+					nameof(model.MoneyOrderSender), "Enter the sender.");
+			if (string.IsNullOrWhiteSpace(model.MoneyOrderRecipient))
+				ModelState.AddModelError(
+					nameof(model.MoneyOrderRecipient), "Enter the recipient.");
+			if (string.IsNullOrWhiteSpace(model.MoneyOrderDocumentType) !=
+				string.IsNullOrWhiteSpace(model.MoneyOrderDocumentIdentifier))
+				ModelState.AddModelError(
+					nameof(model.MoneyOrderDocumentType),
+					"Enter both the identity document type and number, or neither.");
+
+			if (ModelState.IsValid)
+			{
+				moneyOrderRequest = new MoneyOrderBasketRequest(
+					model.MoneyOrderAmount!.Value,
+					model.MoneyOrderSender!,
+					model.MoneyOrderRecipient!,
+					string.IsNullOrWhiteSpace(model.MoneyOrderDocumentType)
+						? null
+						: model.MoneyOrderDocumentType,
+					string.IsNullOrWhiteSpace(model.MoneyOrderDocumentIdentifier)
+						? null
+						: model.MoneyOrderDocumentIdentifier);
+			}
+		}
+
+		if (!hasGoods && !model.IncludeShipping && !model.IncludeMoneyOrder)
 			ModelState.AddModelError(
 				string.Empty,
-				"Add at least one goods item or shipping service.");
+				"Add at least one goods item, shipping service, or money order.");
 
 		var staffId = User.FindFirst("StaffId")?.Value;
 		if (string.IsNullOrWhiteSpace(staffId))
@@ -174,23 +254,21 @@ public sealed class TransactionsController : Controller
 
 		try
 		{
-			var goods = hasGoods
-				? new[]
-				{
-					new GoodsBasketRequest(
-						model.GoodsSku!,
-						model.GoodsQuantity!.Value)
-				}
-				: [];
 			IReadOnlyList<ShippingBasketRequest> shipments = shippingRequest is null
 				? []
 				: [shippingRequest];
+			IReadOnlyList<MoneyOrderBasketRequest> moneyOrders =
+				moneyOrderRequest is null ? [] : [moneyOrderRequest];
 			var transactionId =
 				await _mixedBaskets.CreateAndProcessAsync(
-					model.TransactionId,
 					staffId,
-					goods,
-					shipments,
+					new CounterBasketRequest(
+						model.TransactionId,
+						model.CounterTerminalId!,
+						model.PaymentMethod!,
+						goodsLines,
+						shipments,
+						moneyOrders),
 					cancellationToken);
 			TempData["TransactionActionStatus"] =
 				"Transaction processed.";
@@ -205,6 +283,15 @@ public sealed class TransactionsController : Controller
 		{
 			return Forbid();
 		}
+		catch (IdentityVerificationUnavailableException)
+		{
+			ModelState.AddModelError(
+				string.Empty,
+				"Identity verification is unavailable. The transaction was not processed; try again later.");
+			Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+			return View(await BuildCreateViewModelAsync(
+				model, staffId, cancellationToken));
+		}
 		catch (ArgumentException)
 		{
 			ModelState.AddModelError(
@@ -218,15 +305,17 @@ public sealed class TransactionsController : Controller
 		{
 			ModelState.AddModelError(
 				string.Empty,
-				"The transaction could not be processed. Check configured rates, weight limits, stock, and submission status.");
+				"The transaction could not be processed. Check the counter terminal, configured rates and payment methods, weight limits, stock, money-order identity verification, and submission status.");
 			Response.StatusCode = StatusCodes.Status409Conflict;
 			return View(await BuildCreateViewModelAsync(
 				model, staffId, cancellationToken));
 		}
 	}
 
+	// Managers see every transaction at their branch; a clerk sees the sales
+	// they processed (TransactionAccessRule.CanView), so a completed sale
+	// redirects here for both roles. Void and refund stay manager-only.
 	[HttpGet("{transactionId:guid}")]
-	[Authorize(Roles = nameof(StaffRole.BranchManager))]
 	public async Task<IActionResult> Details(
 		Guid transactionId,
 		CancellationToken cancellationToken)
@@ -237,8 +326,112 @@ public sealed class TransactionsController : Controller
 
 		try
 		{
-			return View(await BuildDetailsViewModelAsync(
-				transactionId, staffId, cancellationToken));
+			var model = await BuildDetailsViewModelAsync(
+				transactionId, staffId, cancellationToken);
+			if (!await IsSameBranchAsync(model.BranchCode))
+				return Forbid();
+			return View(model);
+		}
+		catch (KeyNotFoundException)
+		{
+			return NotFound();
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
+		}
+	}
+
+	// Printable label preview for each shipping line, for the same audience
+	// as Details. It shows only what the sale recorded; the domain holds no
+	// recipient address, so none is printed.
+	[HttpGet("{transactionId:guid}/label")]
+	public async Task<IActionResult> Label(
+		Guid transactionId,
+		CancellationToken cancellationToken)
+	{
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
+		try
+		{
+			var basket = await _transactions.GetTransactionBasketAsync(
+				transactionId, staffId, cancellationToken);
+			if (!await IsSameBranchAsync(basket.BranchCode?.Value))
+				return Forbid();
+
+			var labels = basket.LineItems
+				.Select(item => item.ShippingItem)
+				.OfType<ShippingItem>()
+				.Select(item => new ShippingLabelItemViewModel(
+					item.Id,
+					item.Type,
+					item.ServiceLevel,
+					item.Weight.Kilograms,
+					item.Dimensions.LengthCm,
+					item.Dimensions.WidthCm,
+					item.Dimensions.HeightCm,
+					item.DestinationZone))
+				.ToArray();
+			if (labels.Length == 0)
+				return NotFound();
+
+			return View(new ShippingLabelViewModel(
+				basket.Id,
+				basket.PaymentStatus,
+				basket.BranchCode!.Value,
+				basket.OccurredAtUtc,
+				labels));
+		}
+		catch (KeyNotFoundException)
+		{
+			return NotFound();
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return Forbid();
+		}
+	}
+
+	// JSON basket summary for the same audience as Details.
+	[HttpGet("{transactionId:guid}/summary")]
+	public async Task<IActionResult> Summary(
+		Guid transactionId,
+		CancellationToken cancellationToken)
+	{
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
+		try
+		{
+			var details = await BuildDetailsViewModelAsync(
+				transactionId, staffId, cancellationToken);
+			if (!await IsSameBranchAsync(details.BranchCode))
+				return Forbid();
+			return Json(new
+			{
+				details.Id,
+				Status = details.PaymentStatus.ToString(),
+				details.BranchCode,
+				details.CounterTerminalId,
+				details.ClerkStaffId,
+				details.PaymentMethod,
+				details.OccurredAtUtc,
+				details.Currency,
+				details.Subtotal,
+				details.Tax,
+				details.Total,
+				Lines = details.LineItems.Select(line => new
+				{
+					line.Description,
+					Type = line.Type.ToString(),
+					line.UnitPrice,
+					line.Quantity,
+					line.Subtotal
+				})
+			});
 		}
 		catch (KeyNotFoundException)
 		{
@@ -251,8 +444,9 @@ public sealed class TransactionsController : Controller
 	}
 
 	[HttpPost("{transactionId:guid}/void")]
-	[Authorize(Roles = nameof(StaffRole.BranchManager))]
+	[Authorize(Policy = ApexPostPolicies.BranchManagerOnly)]
 	[ValidateAntiForgeryToken]
+	[Audited]
 	public Task<IActionResult> Void(
 		Guid transactionId,
 		TransactionActionViewModel model,
@@ -265,8 +459,9 @@ public sealed class TransactionsController : Controller
 			cancellationToken);
 
 	[HttpPost("{transactionId:guid}/refund")]
-	[Authorize(Roles = nameof(StaffRole.BranchManager))]
+	[Authorize(Policy = ApexPostPolicies.BranchManagerOnly)]
 	[ValidateAntiForgeryToken]
+	[Audited]
 	public Task<IActionResult> Refund(
 		Guid transactionId,
 		TransactionActionViewModel model,
@@ -341,6 +536,33 @@ public sealed class TransactionsController : Controller
 		}
 	}
 
+	// Void/refund forms are redisplayed on the details page. Create is left to
+	// the action (null): it merges binding errors with its cross-line basket
+	// checks so the clerk sees every problem in one redisplay, and it already
+	// rebuilds the form and clears the identity document number.
+	async Task<IActionResult?> IInvalidModelStateHandler.HandleInvalidModelStateAsync(
+		ActionExecutingContext context)
+	{
+		if (!context.ActionArguments.Values.OfType<TransactionActionViewModel>().Any())
+			return null;
+
+		if (!context.ActionArguments.TryGetValue("transactionId", out var value) ||
+			value is not Guid transactionId ||
+			transactionId == Guid.Empty)
+			return BadRequest();
+
+		var staffId = User.FindFirst("StaffId")?.Value;
+		if (string.IsNullOrWhiteSpace(staffId))
+			return Forbid();
+
+		return await RenderDetailsWithErrorAsync(
+			transactionId,
+			staffId,
+			StatusCodes.Status400BadRequest,
+			"Enter a reason of no more than 500 characters.",
+			context.HttpContext.RequestAborted);
+	}
+
 	private async Task<IActionResult> RenderDetailsWithErrorAsync(
 		Guid transactionId,
 		string staffId,
@@ -411,7 +633,11 @@ public sealed class TransactionsController : Controller
 						TransactionVoidedNotification voided => voided.Reason,
 						TransactionRefundedNotification refunded => refunded.Reason,
 						_ => string.Empty
-					})).ToArray());
+					})).ToArray(),
+			basket.OccurredAtUtc,
+			basket.SaleDetails?.CounterTerminalId,
+			basket.SaleDetails?.ClerkStaffId,
+			basket.SaleDetails?.PaymentMethod);
 	}
 
 	private async Task<CreateTransactionViewModel> BuildCreateViewModelAsync(
@@ -424,8 +650,26 @@ public sealed class TransactionsController : Controller
 		model.Products = catalog.Products;
 		model.Branch = catalog.Branch;
 		model.ShippingRates = catalog.ShippingRates;
+		model.MoneyOrders = catalog.MoneyOrders;
+		model.CounterTerminals = catalog.Branch.CounterTerminals
+			.Where(terminal => terminal.IsActive)
+			.ToArray();
+		model.PaymentMethods = _mixedBaskets.PaymentMethods;
 		model.CanSubmit = _mixedBaskets.HasTaxRates &&
-			(catalog.Products.Count > 0 || catalog.ShippingRates.Count > 0);
+			model.CounterTerminals.Count > 0 &&
+			model.PaymentMethods.Count > 0 &&
+			(catalog.Products.Count > 0 ||
+				catalog.ShippingRates.Count > 0 ||
+				catalog.MoneyOrders is not null);
+		// Always offer at least one goods row to fill in.
+		if (model.GoodsSku.Count == 0)
+		{
+			model.GoodsSku = [null];
+			model.GoodsQuantity = [null];
+		}
+		// Never echo a full identity document number back to the browser.
+		model.MoneyOrderDocumentIdentifier = null;
+		ModelState.Remove(nameof(model.MoneyOrderDocumentIdentifier));
 		return model;
 	}
 }

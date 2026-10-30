@@ -21,12 +21,13 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	{
 		_storageDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-Web-{Guid.NewGuid():N}");
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", _storageDirectory);
 				builder.UseSetting("Transactions:TaxRates:Standard", "0.1");
 				builder.UseSetting("Shipping:TaxCategory", "Standard");
+				builder.UseSetting("Transactions:PaymentMethods:0", "Cash");
 				builder.UseSetting(
 					"Shipping:MaximumParcelWeightKilograms:Standard", "5");
 				builder.ConfigureTestServices(services =>
@@ -68,7 +69,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 	{
 		var storageDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-Web-NoAuth-{Guid.NewGuid():N}");
-		await using var factory = new WebApplicationFactory<Program>()
+		await using var factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", storageDirectory);
@@ -476,7 +477,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 		var html = await response.Content.ReadAsStringAsync();
 		Assert.Contains("<h1>Create transaction</h1>", html, StringComparison.Ordinal);
 		Assert.Contains(
-			"Add at least one goods item or shipping service.",
+			"Add at least one goods item, shipping service, or money order.",
 			html,
 			StringComparison.Ordinal);
 		Assert.Empty((await GetRepositoryAsync()).TransactionBaskets);
@@ -608,6 +609,7 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 
 	[Theory]
 	[InlineData("void", TransactionPaymentStatus.Open)]
+	[InlineData("void", TransactionPaymentStatus.Paid)]
 	[InlineData("refund", TransactionPaymentStatus.Paid)]
 	public async Task StatusChange_ManagerRequestPersistsTransitionAndRedirects(
 		string action,
@@ -709,17 +711,29 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			response.StatusCode);
 	}
 
-	[Fact]
-	public async Task StatusChange_WhenCurrentStateRejectsOperationReturnsConflict()
+	[Theory]
+	[InlineData("void", "void")]
+	[InlineData("void", "refund")]
+	[InlineData("refund", "void")]
+	[InlineData("refund", "refund")]
+	public async Task StatusChange_WhenAlreadyReversedReturnsConflict(
+		string firstAction,
+		string repeatedAction)
 	{
 		var transactionId = await SeedTransactionAsync(
 			TransactionPaymentStatus.Paid);
 		using var client = CreateManagerClient();
 		var token = await GetAntiforgeryTokenAsync(client, transactionId);
+		var firstResponse = await client.PostAsync(
+			$"/Transactions/{transactionId}/{firstAction}",
+			CreateActionForm("First request", token));
+		Assert.Equal(
+			System.Net.HttpStatusCode.Redirect,
+			firstResponse.StatusCode);
 
 		var response = await client.PostAsync(
-			$"/Transactions/{transactionId}/void",
-			CreateActionForm("Attempted void", token));
+			$"/Transactions/{transactionId}/{repeatedAction}",
+			CreateActionForm("Repeated request", token));
 
 		Assert.Equal(
 			System.Net.HttpStatusCode.Conflict,
@@ -728,11 +742,71 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 			"current state",
 			await response.Content.ReadAsStringAsync(),
 			StringComparison.Ordinal);
+		var basket = Assert.Single(
+			(await GetRepositoryAsync()).TransactionBaskets,
+			item => item.Id == transactionId);
 		Assert.Equal(
-			TransactionPaymentStatus.Paid,
-			Assert.Single(
-				(await GetRepositoryAsync()).TransactionBaskets,
-				item => item.Id == transactionId).PaymentStatus);
+			firstAction == "void"
+				? TransactionPaymentStatus.Voided
+				: TransactionPaymentStatus.Refunded,
+			basket.PaymentStatus);
+		Assert.Single(basket.Notifications);
+	}
+
+	[Theory]
+	[InlineData("void")]
+	[InlineData("refund")]
+	public async Task StatusChange_CompletedSaleReturnsStockOnceEndToEnd(
+		string action)
+	{
+		await SeedMixedBasketDataAsync();
+		using var client = CreateManagerClient();
+		var (transactionId, createToken) =
+			await GetCreateFormIdentityAsync(client);
+		var createResponse = await client.PostAsync(
+			"/Transactions/Create",
+			CreateMixedBasketForm(transactionId, createToken));
+		Assert.Equal(
+			System.Net.HttpStatusCode.Redirect,
+			createResponse.StatusCode);
+		Assert.Equal(2, Assert.Single(
+			(await GetRepositoryAsync()).BranchStocks).Quantity);
+		var token = await GetAntiforgeryTokenAsync(client, transactionId);
+
+		var response = await client.PostAsync(
+			$"/Transactions/{transactionId}/{action}",
+			CreateActionForm("Customer returned the goods", token));
+		var repeatedResponse = await client.PostAsync(
+			$"/Transactions/{transactionId}/{action}",
+			CreateActionForm("Repeated request", token));
+
+		Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
+		Assert.Equal(
+			System.Net.HttpStatusCode.Conflict,
+			repeatedResponse.StatusCode);
+		var snapshot = await GetRepositoryAsync();
+		Assert.Equal(4, Assert.Single(snapshot.BranchStocks).Quantity);
+		Assert.Equal(
+			action == "void"
+				? TransactionPaymentStatus.Voided
+				: TransactionPaymentStatus.Refunded,
+			Assert.Single(snapshot.TransactionBaskets).PaymentStatus);
+	}
+
+	[Fact]
+	public async Task Details_PaidSaleOffersBothVoidAndRefund()
+	{
+		var transactionId = await SeedTransactionAsync(
+			TransactionPaymentStatus.Paid);
+		using var client = CreateManagerClient();
+
+		var html = await (await client.GetAsync(
+			$"/Transactions/{transactionId}")).Content.ReadAsStringAsync();
+
+		Assert.Contains($"/Transactions/{transactionId}/void", html,
+			StringComparison.Ordinal);
+		Assert.Contains($"/Transactions/{transactionId}/refund", html,
+			StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -867,6 +941,8 @@ public sealed class TransactionsControllerTests : IAsyncLifetime
 		{
 			new("TransactionId", transactionId.ToString()),
 			new("BranchCode", "BR02"),
+			new("CounterTerminalId", "COUNTER-1"),
+			new("PaymentMethod", "Cash"),
 			new("GoodsSku", "BOX-01"),
 			new("GoodsQuantity", goodsQuantity),
 			new("IncludeShipping", "true"),

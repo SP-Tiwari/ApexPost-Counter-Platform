@@ -1,5 +1,7 @@
 <Project>
   <PropertyGroup>
     <LangVersion>14.0</LangVersion>
+    <!-- The assignment requires a zero-warning build; keep it that way. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 </Project>

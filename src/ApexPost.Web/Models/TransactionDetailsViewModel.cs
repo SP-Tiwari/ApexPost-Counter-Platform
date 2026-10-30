@@ -10,7 +10,11 @@ public sealed record TransactionDetailsViewModel(
 	string Currency,
 	string? BranchCode,
 	IReadOnlyList<TransactionLineViewModel> LineItems,
-	IReadOnlyList<TransactionNotificationViewModel> Notifications);
+	IReadOnlyList<TransactionNotificationViewModel> Notifications,
+	DateTimeOffset? OccurredAtUtc,
+	string? CounterTerminalId,
+	string? ClerkStaffId,
+	string? PaymentMethod);
 
 public sealed record TransactionLineViewModel(
 	string Description,

@@ -12,7 +12,7 @@ public sealed class PersistenceRegistrationTests : IAsyncLifetime
 	public Task InitializeAsync()
 	{
 		_storageDirectory = $"persistence-test-{Guid.NewGuid():N}";
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 				builder.UseSetting("Storage:Directory", _storageDirectory));
 		return Task.CompletedTask;

@@ -4,7 +4,14 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
 {
 	public async Task InvokeAsync(HttpContext context)
 	{
-		ApplyHeaders(context.Response);
+		// Applied in OnStarting, just before the headers are sent, so they are
+		// present even when later code (for example the exception handler)
+		// clears the response headers.
+		context.Response.OnStarting(static state =>
+		{
+			ApplyHeaders((HttpResponse)state);
+			return Task.CompletedTask;
+		}, context.Response);
 
 		await next(context).ConfigureAwait(false);
 	}

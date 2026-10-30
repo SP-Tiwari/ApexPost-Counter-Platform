@@ -1,0 +1,44 @@
+@model ApexPost.Application.Services.ProductCatalogue
+@{
+    ViewData["Title"] = "Product catalogue";
+}
+
+<h1>Product catalogue</h1>
+<p>Stock on hand at @Model.Branch.Name (@Model.Branch.Code).</p>
+
+@if (Model.Rows.Count == 0)
+{
+    <p>No products are in the catalogue.</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th scope="col">SKU</th>
+                <th scope="col">Name</th>
+                <th scope="col">Category</th>
+                <th scope="col">Unit price</th>
+                <th scope="col">Tax category</th>
+                <th scope="col">In stock</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var row in Model.Rows)
+            {
+                <tr>
+                    <td>@row.Product.Sku</td>
+                    <td>@row.Product.Name</td>
+                    <td>@row.Product.Category</td>
+                    <td>@row.Product.UnitPrice.Amount @row.Product.UnitPrice.Currency</td>
+                    <td>@row.Product.TaxCategory</td>
+                    <td>@(row.QuantityOnHand?.ToString() ?? "Not stocked")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<p class="text-muted small">
+    Product details as of @Model.CatalogueLoadedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC (cached); stock levels are current.
+</p>

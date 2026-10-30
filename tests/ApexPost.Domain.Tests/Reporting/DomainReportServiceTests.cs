@@ -55,7 +55,7 @@ public class DomainReportServiceTests
 				StaffRole.BranchManager,
 				new BranchCode("DEL01")),
 			basket,
-			"Customer refund");
+			"Customer refund", []);
 
 		var report = new DailySalesReportService().CreateReport([entry]);
 

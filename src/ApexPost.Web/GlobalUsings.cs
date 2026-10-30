@@ -5,3 +5,5 @@ global using ApexPost.Domain.ValueObjects;
 global using ApexPost.Web.Models;
 global using Microsoft.AspNetCore.Authorization;
 global using Microsoft.AspNetCore.Mvc;
+global using ApexPost.Web.Authorization;
+global using ApexPost.Web.Security;

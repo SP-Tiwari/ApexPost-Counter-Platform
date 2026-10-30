@@ -1,12 +1,25 @@
 using ApexPost.Application.Persistence;
 using ApexPost.Domain.Entities;
 using ApexPost.Domain.Enums;
+using ApexPost.Domain.Services;
 using ApexPost.Domain.ValueObjects;
 
 namespace ApexPost.Infrastructure.Persistence;
 
-public sealed class DemoDataInitializer(IApexPostRepository repository)
+public sealed class DemoDataInitializer(
+	IApexPostRepository repository,
+	TimeProvider? timeProvider = null)
 {
+	private readonly TimeProvider _timeProvider =
+		timeProvider ?? TimeProvider.System;
+
+	// The demo seed is the only seed source. Staff IDs are exposed so demo
+	// logins can be provisioned for exactly these records.
+	public static IReadOnlyList<string> DemoStaffIds { get; } =
+		Enumerable.Range(1, 20)
+			.Select(index => $"demo-staff-{index:00}")
+			.ToArray();
+
 	public async Task<bool> InitializeAsync(
 		CancellationToken cancellationToken = default)
 	{
@@ -17,13 +30,13 @@ public sealed class DemoDataInitializer(IApexPostRepository repository)
 				return snapshot;
 
 			initialized = true;
-			return CreateDemoSnapshot();
+			return CreateDemoSnapshot(_timeProvider.GetUtcNow());
 		}, cancellationToken).ConfigureAwait(false);
 
 		return initialized;
 	}
 
-	private static ApexPostSnapshot CreateDemoSnapshot()
+	private static ApexPostSnapshot CreateDemoSnapshot(DateTimeOffset seededAtUtc)
 	{
 		var branches = Enumerable.Range(1, 5)
 			.Select(index => new Branch(
@@ -37,7 +50,7 @@ public sealed class DemoDataInitializer(IApexPostRepository repository)
 				]))
 			.ToArray();
 
-		var staff = Enumerable.Range(1, 20)
+		var staff = Enumerable.Range(1, DemoStaffIds.Count)
 			.Select(index =>
 			{
 				var branchIndex = (index - 1) / 4;
@@ -49,8 +62,8 @@ public sealed class DemoDataInitializer(IApexPostRepository repository)
 					_ => StaffRole.Administrator
 				};
 				return new Staff(
-					$"demo-staff-{index:00}",
-					$"DEMO Staff {index:00} (not provisioned)",
+					DemoStaffIds[index - 1],
+					$"DEMO Staff {index:00}",
 					$"demo.staff{index:00}@example.invalid",
 					role,
 					branches[branchIndex].Code);
@@ -85,17 +98,24 @@ public sealed class DemoDataInitializer(IApexPostRepository repository)
 			[TaxCategory.Reduced] = 0m,
 			[TaxCategory.ZeroRated] = 0m
 		};
+		var saleProcessing = new SaleProcessingService();
 		var transactions = Enumerable.Range(1, 40)
 			.Select(index =>
 			{
 				var product = products[(index - 1) % products.Length];
+				var branchCode = branches[(index - 1) % branches.Length].Code;
+				// Demo history: one sale every six hours going back from seeding
+				// time, so the daily report has data on recent dates.
 				var basket = new TransactionBasket(
 					Guid.Parse($"00000000-0000-0000-0000-{index:000000000000}"),
 					"INR",
 					taxRates,
-					branches[(index - 1) % branches.Length].Code);
+					branchCode,
+					seededAtUtc.AddHours(-6 * (index - 1)));
 				basket.AddLineItem(new TransactionLineItem(product, 1));
-				basket.Pay();
+				// Process seed sales like real sales so they deduct stock and a
+				// later void or refund returns only stock that was taken.
+				saleProcessing.ProcessSale(basket, branchCode, branchStocks);
 				return basket;
 			})
 			.ToArray();

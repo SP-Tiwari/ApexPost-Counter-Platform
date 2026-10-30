@@ -13,6 +13,14 @@ public sealed class TransactionBasket
 
 	public Guid Id { get; }
 	public string Currency { get; }
+
+	// Null only for transactions persisted before schema version 5, when no
+	// transaction time was recorded.
+	public DateTimeOffset? OccurredAtUtc { get; }
+
+	// Counter, clerk and payment method of a counter sale. Null for
+	// transactions persisted before schema version 7.
+	public CounterSaleDetails? SaleDetails { get; }
 	public BranchCode? BranchCode
 	{
 		get
@@ -66,7 +74,9 @@ public sealed class TransactionBasket
 				_lineItems.ToArray(),
 				_branchCode,
 				_paymentStatus,
-				_notifications.ToArray());
+				_notifications.ToArray(),
+				OccurredAtUtc,
+				SaleDetails);
 		}
 	}
 
@@ -110,8 +120,9 @@ public sealed class TransactionBasket
 	public TransactionBasket(
 		string currency,
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
-		BranchCode? branchCode = null)
-		: this(Guid.NewGuid(), currency, taxRates, branchCode)
+		BranchCode? branchCode = null,
+		DateTimeOffset? occurredAtUtc = null)
+		: this(Guid.NewGuid(), currency, taxRates, branchCode, occurredAtUtc)
 	{
 	}
 
@@ -119,7 +130,9 @@ public sealed class TransactionBasket
 		Guid id,
 		string currency,
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
-		BranchCode? branchCode)
+		BranchCode? branchCode,
+		DateTimeOffset? occurredAtUtc = null,
+		CounterSaleDetails? saleDetails = null)
 	{
 		ArgumentNullException.ThrowIfNull(taxRates);
 
@@ -129,6 +142,8 @@ public sealed class TransactionBasket
 
 		Id = id;
 		Currency = new Money(0m, currency).Currency;
+		OccurredAtUtc = occurredAtUtc?.ToUniversalTime();
+		SaleDetails = saleDetails;
 		_branchCode = branchCode;
 		_taxRates = new Dictionary<TaxCategory, decimal>();
 
@@ -151,7 +166,8 @@ public sealed class TransactionBasket
 		IEnumerable<TransactionLineItem> lineItems,
 		TransactionPaymentStatus paymentStatus,
 		IEnumerable<DomainNotification> notifications,
-		BranchCode? branchCode = null)
+		BranchCode? branchCode = null,
+		DateTimeOffset? occurredAtUtc = null)
 		=> Reconstitute(
 			Guid.NewGuid(),
 			currency,
@@ -159,7 +175,8 @@ public sealed class TransactionBasket
 			lineItems,
 			paymentStatus,
 			notifications,
-			branchCode);
+			branchCode,
+			occurredAtUtc);
 
 	public static TransactionBasket Reconstitute(
 		Guid id,
@@ -168,7 +185,9 @@ public sealed class TransactionBasket
 		IEnumerable<TransactionLineItem> lineItems,
 		TransactionPaymentStatus paymentStatus,
 		IEnumerable<DomainNotification> notifications,
-		BranchCode? branchCode = null)
+		BranchCode? branchCode = null,
+		DateTimeOffset? occurredAtUtc = null,
+		CounterSaleDetails? saleDetails = null)
 	{
 		ArgumentNullException.ThrowIfNull(lineItems);
 		ArgumentNullException.ThrowIfNull(notifications);
@@ -177,7 +196,8 @@ public sealed class TransactionBasket
 			throw new ArgumentOutOfRangeException(nameof(paymentStatus));
 
 		var restoredNotifications = notifications.ToArray();
-		var basket = new TransactionBasket(id, currency, taxRates, branchCode);
+		var basket = new TransactionBasket(
+			id, currency, taxRates, branchCode, occurredAtUtc, saleDetails);
 		foreach (var lineItem in lineItems)
 			basket.AddLineItem(lineItem);
 
@@ -217,7 +237,8 @@ public sealed class TransactionBasket
 					"Transaction line currency must match the basket currency.",
 					nameof(lineItem));
 
-			if (!_taxRates.ContainsKey(lineItem.TaxCategory))
+			if (lineItem.Type != TransactionItemType.MoneyOrder &&
+				!_taxRates.ContainsKey(lineItem.TaxCategory))
 				throw new InvalidOperationException(
 					$"No tax rate is configured for category '{lineItem.TaxCategory}'.");
 
@@ -264,7 +285,13 @@ public sealed class TransactionBasket
 
 		lock (DomainMutationLock.Gate)
 		{
-			EnsureOpen();
+			if (PaymentStatus is not TransactionPaymentStatus.Open and
+				not TransactionPaymentStatus.Paid)
+			{
+				throw new InvalidOperationException(
+					$"A transaction can only be voided when its status is Open or Paid; current status is '{PaymentStatus}'.");
+			}
+
 			_notifications.Add(
 				new TransactionVoidedNotification(reason.Trim()));
 			PaymentStatus = TransactionPaymentStatus.Voided;
@@ -306,10 +333,7 @@ public sealed class TransactionBasket
 	private Money GetTax()
 	{
 		lock (DomainMutationLock.Gate)
-			return new(
-				_lineItems.Sum(lineItem =>
-					lineItem.Subtotal.Amount * _taxRates[lineItem.TaxCategory]),
-				Currency);
+			return new(_lineItems.Sum(GetLineTax), Currency);
 	}
 
 	private Money GetTotalFor(TransactionItemType itemType)
@@ -319,11 +343,17 @@ public sealed class TransactionBasket
 			.Sum(lineItem => lineItem.Subtotal.Amount);
 		var tax = _lineItems
 			.Where(lineItem => lineItem.Type == itemType)
-			.Sum(lineItem =>
-				lineItem.Subtotal.Amount * _taxRates[lineItem.TaxCategory]);
+			.Sum(GetLineTax);
 
 		return new Money(subtotal + tax, Currency);
 	}
+
+	private decimal GetLineTax(TransactionLineItem lineItem) =>
+		lineItem.Type switch
+		{
+			TransactionItemType.MoneyOrder => 0m,
+			_ => lineItem.Subtotal.Amount * _taxRates[lineItem.TaxCategory]
+		};
 
 	private static string GetRequiredReason<TNotification>(
 		IReadOnlyList<DomainNotification> notifications)

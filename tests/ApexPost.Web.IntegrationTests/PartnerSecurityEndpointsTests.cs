@@ -14,7 +14,7 @@ public sealed class PartnerSecurityEndpointsTests : IAsyncLifetime
 		_rootDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-PartnerEndpoints-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(_rootDirectory);
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting(

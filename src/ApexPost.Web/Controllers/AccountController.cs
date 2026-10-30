@@ -1,5 +1,7 @@
+using ApexPost.Web.Filters;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 using System.Text.Json;
@@ -7,7 +9,7 @@ using System.Text.Json;
 namespace ApexPost.Web.Controllers;
 
 [Route("[controller]/[action]")]
-public sealed class AccountController : Controller
+public sealed class AccountController : Controller, IInvalidModelStateHandler
 {
 	private readonly StaffAuthenticationService _staffAuthentication;
 	private readonly ILogger<AccountController> _logger;
@@ -31,17 +33,13 @@ public sealed class AccountController : Controller
 	[HttpPost]
 	[EnableRateLimiting("staff-sign-in")]
 	[ValidateAntiForgeryToken]
+	[Audited]
 	public async Task<IActionResult> SignIn(
 		StaffSignInViewModel model,
 		CancellationToken cancellationToken)
 	{
 		if (!ModelState.IsValid)
-		{
-			ModelState.Remove(nameof(model.Password));
-			model.Password = string.Empty;
-			Response.StatusCode = StatusCodes.Status400BadRequest;
-			return View(model);
-		}
+			return RedisplayInvalidSignIn(model);
 
 		Staff? staff;
 		try
@@ -92,10 +90,14 @@ public sealed class AccountController : Controller
 			ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8),
 			AllowRefresh = true
 		};
+		var principal = new ClaimsPrincipal(identity);
 		await HttpContext.SignInAsync(
 			CookieAuthenticationDefaults.AuthenticationScheme,
-			new ClaimsPrincipal(identity),
+			principal,
 			properties);
+		// SignInAsync only issues the cookie; expose the verified principal to
+		// the rest of this request so the audit record names who signed in.
+		HttpContext.User = principal;
 
 		if (!string.IsNullOrEmpty(model.ReturnUrl) &&
 			Url.IsLocalUrl(model.ReturnUrl))
@@ -106,18 +108,42 @@ public sealed class AccountController : Controller
 		return RedirectToAction("Index", "Home");
 	}
 
+	// The cookie handler redirects a forbidden browser request here; the page
+	// itself answers 403 so the final status still reports the refusal.
 	[AllowAnonymous]
 	[HttpGet]
-	public IActionResult AccessDenied() => View();
+	public IActionResult AccessDenied()
+	{
+		Response.StatusCode = StatusCodes.Status403Forbidden;
+		return View();
+	}
 
 	[Authorize]
 	[HttpPost]
 	[ActionName("SignOut")]
 	[ValidateAntiForgeryToken]
+	[Audited]
 	public async Task<IActionResult> SignOutPost()
 	{
 		await HttpContext.SignOutAsync(
 			CookieAuthenticationDefaults.AuthenticationScheme);
 		return RedirectToAction(nameof(SignIn));
+	}
+
+	Task<IActionResult?> IInvalidModelStateHandler.HandleInvalidModelStateAsync(
+		ActionExecutingContext context) =>
+		Task.FromResult(
+			context.ActionArguments.Values.OfType<StaffSignInViewModel>()
+				.FirstOrDefault() is { } model
+				? RedisplayInvalidSignIn(model)
+				: null);
+
+	// The password is never echoed back into the redisplayed form.
+	private IActionResult RedisplayInvalidSignIn(StaffSignInViewModel model)
+	{
+		ModelState.Remove(nameof(model.Password));
+		model.Password = string.Empty;
+		Response.StatusCode = StatusCodes.Status400BadRequest;
+		return View(nameof(SignIn), model);
 	}
 }

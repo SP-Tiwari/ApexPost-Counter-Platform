@@ -11,8 +11,9 @@
 }
 
 <p>
-    <a class="btn btn-primary" asp-controller="MoneyOrders" asp-action="Create">
-        Process money order
+    Money orders are issued as part of a counter transaction.
+    <a class="btn btn-primary" asp-controller="Transactions" asp-action="Create">
+        New counter transaction
     </a>
 </p>
 
@@ -30,6 +31,7 @@ else
                 <th scope="col">Recipient</th>
                 <th scope="col">Fee</th>
                 <th scope="col">Identity check</th>
+                <th scope="col">Status</th>
             </tr>
         </thead>
         <tbody>
@@ -51,6 +53,7 @@ else
                             <span>Not required</span>
                         }
                     </td>
+                    <td>@order.Status</td>
                 </tr>
             }
         </tbody>

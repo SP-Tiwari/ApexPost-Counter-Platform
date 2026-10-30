@@ -157,7 +157,7 @@ public sealed class ApiKeyAndIpRestrictionMiddlewareTests : IAsyncLifetime
 		var instanceDirectory = Path.Combine(_rootDirectory, instanceName);
 		Directory.CreateDirectory(instanceDirectory);
 
-		return new WebApplicationFactory<Program>()
+		return new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting(

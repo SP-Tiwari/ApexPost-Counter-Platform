@@ -7,16 +7,16 @@ public sealed class BranchStock
 {
 	public BranchCode BranchCode { get; }
 	public Sku ProductSku { get; }
-	private int _quantity;
 
+	// C# 14 field keyword: the locked getter needs no separate backing field.
 	public int Quantity
 	{
 		get
 		{
 			lock (DomainMutationLock.Gate)
-				return _quantity;
+				return field;
 		}
-		private set => _quantity = value;
+		private set;
 	}
 
 	public BranchStock(BranchCode branchCode, Sku productSku, int quantity)

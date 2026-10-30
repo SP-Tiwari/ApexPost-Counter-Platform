@@ -9,7 +9,7 @@ public sealed class ReportsController(
 	DailyBranchSalesReportApplicationService dailySalesReports) : Controller
 {
 	[HttpGet]
-	[Authorize(Roles = nameof(StaffRole.BranchManager))]
+	[Authorize(Policy = ApexPostPolicies.BranchManagerOnly)]
 	public async Task<IActionResult> DailySales(
 		DateOnly? businessDate,
 		CancellationToken cancellationToken)
@@ -79,7 +79,7 @@ public sealed class ReportsController(
 	}
 
 	[HttpGet]
-	[Authorize(Roles = nameof(StaffRole.BranchManager))]
+	[Authorize(Policy = ApexPostPolicies.BranchManagerOnly)]
 	public async Task<IActionResult> LowStock(
 		CancellationToken cancellationToken)
 	{

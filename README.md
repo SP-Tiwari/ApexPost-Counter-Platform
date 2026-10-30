@@ -12,93 +12,142 @@ ApexPost is a .NET 10 / C# 14 ASP.NET Core MVC application for postal branch cou
 
 ## Implemented workflows and protections
 
-- Administrators can add branches (with their first counter), add staff, add catalogue products, and close or reopen branches through the protected Administration page. These master-data actions remain behind application services and JSON repository abstractions.
+- **Counter sales:** one transaction can mix several goods lines, a shipping service and money orders. Each sale records its counter terminal, clerk, payment method and time (`OccurredAtUtc`). Stock, shipping rates, parcel limits, tax and duplicate submissions are all checked inside one atomic update. Active Counter Clerks and Branch Managers sell at their home branch. After a sale, the clerk sees its details (read-only) and, for shipping lines, a printable label preview at `/Transactions/{id}/label`.
+- **Catalogue:** `/Catalogue` lists every product (SKU, category, price, tax category) with stock on hand at the signed-in staff member's branch. Products come from the reference-data cache; stock is read live.
+- **Money orders:** issued as basket lines, with the fee taken from configuration. Above the configured threshold, a system identity-verification service decides the result (a simulated provider with a timeout), and only the masked document number is kept.
+- **Voids and refunds:** Branch Managers of the same branch can void open or paid sales and refund paid sales, with a reason. Stock is returned and money orders are cancelled exactly once.
+- **Stock and reports:**
+  - Branch Managers adjust stock.
+  - Branch Managers see daily sales by date and low stock.
+  - Auditors and Administrators see shipping volume and the money-order and identity-verification report.
+  - The branch dashboard loads its data in parallel.
+- **Notifications:** domain events are published only after a change is saved. Simulated notifications for low stock, high-value money orders, voids and refunds are written as warning log entries.
+- **Partner API:** `GET /integration/parcel-status/{shipmentId}` is protected by `[RequireApiKey]` metadata (constant-time key check, IP allowlist, partner rate limit) and CORS for the tracking widget's origin. It returns stored shipment facts, the transaction status and a simulated courier status.
+- **Security:**
+  - Cookie sign-in, checked against the staff record on every request.
+  - Policies: `BranchManagerOnly` and `SameBranchOnly`.
+  - IP allowlist for admin pages; antiforgery on every form.
+  - Security headers via `OnStarting`; HSTS outside Development.
+  - Correlation IDs, Problem Details errors and maintenance mode; `/health` stays reachable.
+- **Filters:** opt-in `[Audited]` business-action audit with real status codes, a validation filter for MVC forms and API endpoints, and a slow-action filter.
+- **Persistence:** versioned JSON snapshot (schema 7) with migration from older files; separate credential and audit files.
+- **Demo:** a one-command demo with documented logins, described in the next section.
 
-- Goods and shipping can be processed in one transaction. Stock, configured shipping rates, parcel limits, tax configuration, branch attribution, and duplicate submission checks are applied before persistence.
-- Active Counter Clerks and Branch Managers can process sales at their persisted home branch. Active Branch Managers can adjust stock at their home branch through an audited workflow.
-- Transaction lists, details, voids, and refunds are limited to the active Branch Manager's persisted home branch. Legacy transactions with no branch attribution are not exposed.
-- Money orders use an explicitly configured high-value threshold. High-value orders require successful manager-attested, in-person identity verification; only a masked document identifier is retained.
-- Staff sign-in uses a separately provisioned JSON credential file and secure cookie authentication. Demo data does not create credentials or enable sign-in.
-- The Web pipeline includes correlation IDs, exception handling with Problem Details, security headers, maintenance mode, configured API-key/IP restrictions, staff and partner rate limiting, authentication, authorization, and MVC action auditing. `/health` returns a non-sensitive liveness response.
-- Parcel-tracking CORS is restricted to exact deployment-configured origins, allows read-only GET requests, and does not allow credentials. No tracking-status endpoint is implemented because persisted shipping data has no tracking state or event history.
-- JSON snapshot persistence validates domain data, supports schema migration, and uses atomic updates within a repository instance.
+## Run the demo
+
+Requirements: the .NET 10 SDK and a trusted HTTPS development certificate (`dotnet dev-certs https --trust`). The sign-in cookie is HTTPS-only.
+
+From the repository root, run:
+
+```powershell
+./scripts/run-demo.ps1
+```
+
+The script:
+
+1. Stores a randomly generated demo password in user-secrets as `DemoData:StaffPassword`, unless one is already set, and prints it.
+2. Starts the app with the `demo` launch profile at <https://localhost:7034>. The profile uses the Development environment, sets `DemoData:Initialize=true`, and keeps all demo data under `src/ApexPost.Web/data/demo/`, which git ignores.
+
+On first start the app seeds the fictional demo snapshot, then creates sign-in credentials for the 20 demo staff. Only PBKDF2 hashes are written to `data/demo/staff-credentials.json`; the password itself is never written to the repository.
+
+Demo logins (all use the password the script prints):
+
+| Staff ID | Role | Branch |
+|---|---|---|
+| `demo-staff-01` | Counter Clerk | DM01 |
+| `demo-staff-02` | Branch Manager | DM01 |
+| `demo-staff-03` | Auditor | DM01 |
+| `demo-staff-04` | Administrator | DM01 |
+| `demo-staff-05` – `demo-staff-20` | The same four roles, repeated in that order | DM02 – DM05 |
+
+Other options:
+
+- **Use your own password:** run `./scripts/run-demo.ps1 -Password '<your demo password>'`.
+- **Start over:** `-Reset` deletes `data/demo/` so the seed and logins are recreated. You need this for a changed password to take effect, because existing logins are never overwritten.
+- **Without the script:** run `dotnet user-secrets set DemoData:StaffPassword "<your demo password>" --project src/ApexPost.Web`, then `dotnet run --project src/ApexPost.Web --launch-profile demo`.
+
+`DemoData:StaffPassword` is only accepted in the Development environment; startup fails if it is set anywhere else. If demo data is enabled without it, the app starts but logs a warning, and the demo staff cannot sign in.
+
+### Workflows that need your configuration
+
+Sign-in, the dashboard, transaction history, details, voids and refunds, stock adjustment and administration work on the seed alone. Some workflows stay disabled until you supply the business values they need. The project ships no defaults for these, so choose your own values and set them with user-secrets, for example:
+
+```powershell
+dotnet user-secrets set "Transactions:TaxRates:ZeroRated" "<rate>" --project src/ApexPost.Web
+```
+
+| Workflow | Settings |
+|---|---|
+| New counter sales | `Transactions:TaxRates:<TaxCategory>` for the categories you sell, and `Transactions:PaymentMethods:0`, `:1`, … |
+| Shipping lines | `Shipping:TaxCategory`, `Shipping:MaximumParcelWeightKilograms:<ServiceLevel>` (the seeded zones are `Standard`) |
+| Money orders | `MoneyOrders:HighValueThreshold:Amount` and `:Currency`, `MoneyOrders:Fee:Amount` and `:TaxCategory`, `MoneyOrders:Verification:AcceptedDocumentTypes:0`, … and `MoneyOrders:Verification:TimeoutSeconds` |
+| Low-stock report and alerts | `Reports:LowStockThreshold` |
+| Partner parcel-status API | see below |
+
+### Partner API key
+
+`GET /integration/parcel-status/{shipmentId}` requires the `X-API-Key` header. Keep the key in user-secrets (or an environment variable in deployment), never in source:
+
+```powershell
+dotnet user-secrets set "ApiSecurity:ApiKey" "<your partner key>" --project src/ApexPost.Web
+dotnet user-secrets set "ApiSecurity:PartnerRateLimit:PermitLimit" "<requests per window>" --project src/ApexPost.Web
+dotnet user-secrets set "ApiSecurity:PartnerRateLimit:WindowSeconds" "<window length>" --project src/ApexPost.Web
+```
+
+When a key is set, startup requires the partner rate limit. Without a key, the endpoint fails closed with 500.
+
+Sample request:
+
+```powershell
+curl.exe -H "X-API-Key: <your partner key>" https://localhost:7034/integration/parcel-status/<shipmentId>
+```
 
 ## Configuration
 
-`src/ApexPost.Web/appsettings.json` documents non-secret settings. The storage directory is `Storage:Directory`; credentials are stored separately at `Authentication:CredentialFile`. The application does not create credentials or seed by default.
+`src/ApexPost.Web/appsettings.json` documents non-secret settings. The storage directory is `Storage:Directory`; credentials are stored separately at `Authentication:CredentialFile`. By default the application neither seeds data nor creates credentials. The Web project has a `UserSecretsId`, so `dotnet user-secrets` works for local secrets in Development.
 
 Production operators must explicitly provide business configuration as applicable:
 
-- `Transactions:TaxRates:<TaxCategory>`
-- `Shipping:TaxCategory`
-- `Shipping:MaximumParcelWeightKilograms:<ShippingServiceLevel>`
+- `Transactions:TaxRates:<TaxCategory>` and `Transactions:PaymentMethods`
+- `Shipping:TaxCategory` and `Shipping:MaximumParcelWeightKilograms:<ShippingServiceLevel>`
 - shipping rates in the JSON snapshot, per destination zone and service level
-- `Reports:LowStockThreshold`
-- both `MoneyOrders:HighValueThreshold:Amount` and `MoneyOrders:HighValueThreshold:Currency`
-- partner API key and protected-IP configuration, supplied outside source control
+- `MoneyOrders:HighValueThreshold:Amount` and `:Currency`, `MoneyOrders:Fee:Amount` and `:TaxCategory`, `MoneyOrders:Verification:AcceptedDocumentTypes` and `:TimeoutSeconds` (plus optional `:SimulatedLatencyMilliseconds`)
+- `Reports:LowStockThreshold`, which is used by the low-stock report and the low-stock notification
+- partner settings, supplied outside source control:
+  - `ApiSecurity:ApiKey`
+  - `ApiSecurity:PartnerRateLimit:PermitLimit` and `:WindowSeconds`
+  - `ApiSecurity:AllowedIpAddresses`
+  - `ParcelTracking:AllowedOrigins`
+- `AdminSecurity:AllowedIpAddresses` for the administration pages
+- optionally `Courier:SimulatedTrackingStatus`, `Courier:TimeoutSeconds` and `Courier:MaxConcurrentLookups`; without them the parcel-status response reports the courier as `NotConfigured`
 
-No production prices, tax rates, parcel limits, money-order thresholds, or low-stock thresholds are supplied as defaults. Missing required settings fail closed for the affected workflow.
+No production prices, tax rates, payment methods, parcel limits, fees, or money-order and low-stock thresholds are supplied as defaults. Missing required settings fail closed for the affected workflow, and partial or invalid settings stop startup. An empty IP allowlist switches that filter off, so production must set both allowlists.
 
-Partner integration prefixes are opt-in through `ApiSecurity:ProtectedPathPrefixes`. When any are configured, set positive `ApiSecurity:PartnerRateLimit:PermitLimit` and `ApiSecurity:PartnerRateLimit:WindowSeconds` values; startup rejects missing or invalid limits. Requests must first pass the existing API-key and IP checks, then share a fixed-window bucket keyed by the SHA-256 digest of the validated API key. The current configuration supports one shared API key, so it provides one partner bucket rather than separate buckets for distinct partners. Client-supplied partner identity headers are ignored. `ParcelTracking:AllowedOrigins` is an exact-origin array; it defaults to empty (no cross-origin access) and must be populated by deployment configuration with the approved HTTP or HTTPS origin. Wildcards and credentialed CORS are not supported.
+The partner endpoint is protected by `[RequireApiKey]` endpoint metadata. `ApiSecurity:ProtectedPathPrefixes` can additionally protect other paths by prefix. Requests must pass the API-key and IP checks first, then share a fixed-window bucket keyed by the SHA-256 digest of the validated key. Because there is one shared key, all partners share one bucket. Client-supplied partner identity headers are ignored. `ParcelTracking:AllowedOrigins` is an exact-origin array; it defaults to empty (no cross-origin access). Wildcards and credentialed CORS are not supported.
 
 ### Optional fictional demo data
 
-Set `DemoData:Initialize` to `true` to initialize an entirely empty JSON snapshot with fictional demo branches, staff records, products, stock, shipping rates, and paid transaction baskets. The setting defaults to `false`. Initialization uses the repository's locked `UpdateAsync` operation and only writes when every snapshot collection is empty; it does not merge demo values into an existing store. Turn the setting off after initialization.
+The single seed source is `DemoDataInitializer` (`src/ApexPost.Infrastructure/Persistence/DemoDataInitializer.cs`). It contains:
 
-All seeded people and business values are explicitly marked or named `DEMO`. The runtime initializer seed contains no passwords, password hashes, secrets, or identity-document numbers. Demo staff cannot sign in through runtime initialization alone; any real staff credential must be provisioned separately through the configured protected credential file. Demo prices and zero tax rates are examples only and must not be used as production business values. Demo parcel limits and money-order thresholds are not seeded.
+- 5 branches, each with 2 counter terminals
+- 20 staff, covering every role in each branch
+- 30 products
+- stock for each product at every branch (150 rows)
+- 10 shipping zones with rates
+- 40 paid historical sales, one every six hours back from seeding time
 
-The repository's transaction schema has no transaction business date. The 40 demo baskets are persisted in `Paid` state but cannot be assigned verifiable historical dates without a schema change. The original assignment document was not present in this checkout, so rubric counts beyond those explicitly supplied in the task remain unverified.
+The sales are processed through the same domain service as real sales, so they deduct stock and the reports have recent dates.
 
-## Seed Data and App_Data
+Set `DemoData:Initialize` to `true` to seed an entirely empty JSON snapshot. The setting defaults to `false`. Initialization uses the repository's locked `UpdateAsync` operation, writes only when every snapshot collection is empty, and never merges demo values into an existing store.
 
-The Web project now contains inspectable seed-data artifacts at:
-
-- `src/ApexPost.Web/App_Data/SeedData/`
-
-Current files and purposes:
-
-- `branches.json` - sample branch master records (`code`, `name`, `region`, `openingHours`, `isActive`).
-- `counters.json` - sample counter records mapped to branch codes.
-- `staff.json` - sample staff profiles (IDs, names, emails, roles, home branch, active status).
-- `staff-credentials.json` - sample credential document in the existing authentication schema (`schemaVersion`, `credentials`) using salted password hashes only.
-- `products.json` - sample product catalog records (SKU, name, category, unit price, tax category).
-- `inventory.json` - sample branch/product stock entries.
-- `counter-transactions.json` - sample transaction-like records for manual inspection.
-- `apexpost-demo-seed.json` - seed manifest/metadata file describing seed artifacts.
-
-Current status and limitations:
-
-- These files are currently **viewable seed-data samples only**.
-- `DemoDataInitializer` is still C#-driven and does **not** load from `App_Data/SeedData` yet.
-- Runtime operational persistence still follows configured repository paths (`Storage:Directory` for `apexpost.json`, `Authentication:CredentialFile` for credentials).
-- Keep all business changes flowing through Application services and repository abstractions, not by manual edits to runtime store files.
-
-Record counts currently present in the seed files:
-
-- `branches.json`: 5
-- `counters.json`: 10
-- `staff.json`: 20
-- `staff-credentials.json` credentials: 4
-- `products.json`: 30
-- `inventory.json`: 25
-- `counter-transactions.json`: 10
-
-To inspect these files:
-
-- In Visual Studio/VS Code: open `src/ApexPost.Web/App_Data/SeedData` from Solution Explorer/Explorer.
-- In File Explorer: open `<repo-root>\src\ApexPost.Web\App_Data\SeedData`.
-
-Security notes:
-
-- `App_Data` is outside `wwwroot`; do not expose these files through static-file hosting or unrestricted endpoints.
-- Never store plaintext passwords, production secrets, API keys, card data, or full identity-document numbers in seed JSON.
+All seeded people and business values are marked or named `DEMO`. The snapshot contains no passwords, hashes, secrets or identity-document numbers; demo credentials are written only to the separate credential file, as described above. Demo prices, shipping rates and zero tax rates are illustrative and must not be used as production values. Parcel limits, money-order thresholds and fees, and low-stock thresholds are not seeded.
 
 ## Documentation and sample records
 
-- [Architecture, data flow, and request pipeline](docs/architecture.md)
-- [C# 14 evidence](docs/csharp-14-evidence.md)
+- [Design](DESIGN.md): architecture and domain diagrams, pipeline order, middleware versus filters, threats and mitigations, auditing, concurrency, C# 14 features, SOLID mapping
+- [Request flow](docs/architecture.md): a counter sale end to end
 - [Architecture Decision Records](docs/adr/)
-- [Audit sample](data/AUDIT-SAMPLE.json) — one safe record matching the JSONL audit record schema; not application state.
+- [Audit sample](data/AUDIT-SAMPLE.json) — the 12 lines of `audit-events.jsonl` written during a local diagnostic run against seeded demo data (sign-in, stock adjustment, a manager's and a clerk's sale with their transaction IDs, void and refund, including rejected attempts), exported unchanged as a JSON array; not application state.
 
 ## Build and test
 

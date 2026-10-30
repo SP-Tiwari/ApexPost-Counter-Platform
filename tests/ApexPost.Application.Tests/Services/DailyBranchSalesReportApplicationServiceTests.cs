@@ -1,5 +1,5 @@
+using ApexPost.Application.Tests.TestDoubles;
 using ApexPost.Domain.Reporting;
-using NSubstitute;
 
 namespace ApexPost.Application.Tests.Services;
 
@@ -9,6 +9,8 @@ public sealed class DailyBranchSalesReportApplicationServiceTests
 	private static readonly BranchCode OtherBranch = new("BR02");
 	private const string ManagerId = "manager-1";
 	private static readonly DateOnly ReportDate = new(2026, 1, 15);
+	private static readonly DateTimeOffset OnReportDate =
+		new(2026, 1, 15, 10, 30, 0, TimeSpan.Zero);
 
 	[Fact]
 	public async Task GetReportAsync_ReturnsDailyRetailAndServiceTotalsForHomeBranch()
@@ -38,6 +40,28 @@ public sealed class DailyBranchSalesReportApplicationServiceTests
 					new Money(30m, "INR"))
 			],
 			report);
+	}
+
+	[Fact]
+	public async Task GetReportAsync_IncludesOnlySalesRecordedOnTheRequestedDate()
+	{
+		var onDate = CreatePaidBasket(
+			HomeBranch, 100m, 0m, "INR", OnReportDate);
+		var dayBefore = CreatePaidBasket(
+			HomeBranch, 40m, 0m, "INR", OnReportDate.AddDays(-1));
+		var dayAfter = CreatePaidBasket(
+			HomeBranch, 25m, 0m, "INR", OnReportDate.AddDays(1));
+		var undated = CreatePaidBasket(
+			HomeBranch, 60m, 0m, "INR", occurredAtUtc: null);
+		var service = CreateService(
+			CreateStaff(ManagerId, StaffRole.BranchManager, HomeBranch),
+			[onDate, dayBefore, dayAfter, undated]);
+
+		var row = Assert.Single(
+			await service.GetReportAsync(ManagerId, ReportDate));
+		Assert.Equal(new Money(100m, "INR"), row.TotalSales);
+		Assert.Empty(await service.GetReportAsync(
+			ManagerId, ReportDate.AddDays(-2)));
 	}
 
 	[Fact]
@@ -79,34 +103,28 @@ public sealed class DailyBranchSalesReportApplicationServiceTests
 	[Fact]
 	public async Task GetReportAsync_MissingStaffIdIsDeniedWithoutLoading()
 	{
-		var repository = Substitute.For<IApexPostRepository>();
+		var repository = new FakeApexPostRepository();
 		var service = new DailyBranchSalesReportApplicationService(repository);
 
 		await Assert.ThrowsAsync<UnauthorizedAccessException>(
 			() => service.GetReportAsync(" ", ReportDate));
 
-		await repository.DidNotReceive()
-			.LoadAsync(Arg.Any<CancellationToken>());
+		Assert.Equal(0, repository.LoadCount);
 	}
 
 	private static DailyBranchSalesReportApplicationService CreateService(
 		Staff staff,
-		IEnumerable<TransactionBasket> baskets)
-	{
-		var repository = Substitute.For<IApexPostRepository>();
-		repository.LoadAsync(Arg.Any<CancellationToken>())
-			.Returns(new ApexPostSnapshot(
-				[],
-				[staff],
-				[],
-				[],
-				[],
-				[],
-				[],
-				[],
-				baskets));
-		return new DailyBranchSalesReportApplicationService(repository);
-	}
+		IEnumerable<TransactionBasket> baskets) =>
+		new(new FakeApexPostRepository(new ApexPostSnapshot(
+			[],
+			[staff],
+			[],
+			[],
+			[],
+			[],
+			[],
+			[],
+			baskets)));
 
 	private static Staff CreateStaff(
 		string id,
@@ -119,12 +137,22 @@ public sealed class DailyBranchSalesReportApplicationServiceTests
 		decimal goodsTotal,
 		decimal serviceTotal,
 		string currency)
+		=> CreatePaidBasket(
+			branchCode, goodsTotal, serviceTotal, currency, OnReportDate);
+
+	private static TransactionBasket CreatePaidBasket(
+		BranchCode branchCode,
+		decimal goodsTotal,
+		decimal serviceTotal,
+		string currency,
+		DateTimeOffset? occurredAtUtc)
 	{
 		var taxRates = new Dictionary<TaxCategory, decimal>
 		{
 			[TaxCategory.Standard] = 0m
 		};
-		var basket = new TransactionBasket(currency, taxRates, branchCode);
+		var basket = new TransactionBasket(
+			currency, taxRates, branchCode, occurredAtUtc);
 		if (goodsTotal > 0)
 		{
 			basket.AddLineItem(new TransactionLineItem(

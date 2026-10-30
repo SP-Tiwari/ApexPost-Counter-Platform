@@ -21,7 +21,7 @@ public sealed class BranchAuditorReportsControllerTests : IAsyncLifetime
 		_storageDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-BranchAuditor-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(_storageDirectory);
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", _storageDirectory);

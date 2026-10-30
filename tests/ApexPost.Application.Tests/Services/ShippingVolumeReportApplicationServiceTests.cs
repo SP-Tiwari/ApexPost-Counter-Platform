@@ -1,5 +1,5 @@
 using ApexPost.Domain.Reporting;
-using NSubstitute;
+using ApexPost.Application.Tests.TestDoubles;
 
 namespace ApexPost.Application.Tests.Services;
 
@@ -78,26 +78,20 @@ public sealed class ShippingVolumeReportApplicationServiceTests
 	[Fact]
 	public async Task GetReportAsync_MissingStaffIdIsDeniedWithoutLoading()
 	{
-		var repository = Substitute.For<IApexPostRepository>();
+		var repository = new FakeApexPostRepository();
 		var service = new ShippingVolumeReportApplicationService(repository);
 
 		await Assert.ThrowsAsync<UnauthorizedAccessException>(
 			() => service.GetReportAsync(" "));
 
-		await repository.DidNotReceive()
-			.LoadAsync(Arg.Any<CancellationToken>());
+		Assert.Equal(0, repository.LoadCount);
 	}
 
 	private static ShippingVolumeReportApplicationService CreateService(
 		Staff staff,
-		IEnumerable<ShippingItem> items)
-	{
-		var repository = Substitute.For<IApexPostRepository>();
-		repository.LoadAsync(Arg.Any<CancellationToken>())
-			.Returns(new ApexPostSnapshot(
-				[], [staff], [], [], items, [], [], [], []));
-		return new ShippingVolumeReportApplicationService(repository);
-	}
+		IEnumerable<ShippingItem> items) =>
+		new(new FakeApexPostRepository(new ApexPostSnapshot(
+			[], [staff], [], [], items, [], [], [], [])));
 
 	private static Staff CreateStaff(StaffRole role) =>
 		new(ManagerId, "Test", "t@example.test", role,

@@ -44,6 +44,8 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 		staff.Deactivate();
 
 		var product = CreateProduct();
+		var branchStock = new BranchStock(
+			new BranchCode("DEL01"), product.Sku, 6);
 		var basket = CreateBasket(product);
 		basket.AddLineItem(new TransactionLineItem(
 			"Parcel service",
@@ -55,7 +57,8 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 		new TransactionVoidRefundRule().Refund(
 			CreateManager(),
 			basket,
-			"Customer request");
+			"Customer request",
+			[branchStock]);
 		var verification = new IdentityVerification(
 			"Passport",
 			FullDocumentIdentifier,
@@ -68,7 +71,8 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 		new TransactionVoidRefundRule().Void(
 			CreateManager(),
 			voidedBasket,
-			"Duplicate entry");
+			"Duplicate entry",
+			[branchStock]);
 		var openBasket = new TransactionBasket(
 			"INR",
 			new Dictionary<TaxCategory, decimal>
@@ -88,7 +92,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			[branch],
 			[staff],
 			[product],
-			[new BranchStock(new BranchCode("DEL01"), product.Sku, 8)],
+			[branchStock],
 			[CreateShippingItem()],
 			[CreateShippingRate()],
 			[moneyOrder],
@@ -188,7 +192,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 
 		var document = JsonNode.Parse(
 			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
-		document["schemaVersion"] = 4;
+		DowngradeTo(document, 4);
 		document["moneyOrders"]![0]!.AsObject()
 			.Remove("processingBranchCode");
 		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
@@ -196,10 +200,113 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 		var loadedOrder = Assert.Single((await repository.LoadAsync()).MoneyOrders);
 
 		Assert.Null(loadedOrder.ProcessingBranchCode);
+		// Version 6 added money-order IDs and statuses; older orders get a new
+		// ID and are Issued, and the file is rewritten at the current version.
+		Assert.NotEqual(Guid.Empty, loadedOrder.Id);
+		Assert.Equal(MoneyOrderStatus.Issued, loadedOrder.Status);
 		Assert.Equal(
-			4,
+			7,
 			JsonNode.Parse(await File.ReadAllTextAsync(DataFilePath))!
 				["schemaVersion"]!.GetValue<int>());
+		Assert.Equal(
+			loadedOrder.Id,
+			Assert.Single((await repository.LoadAsync()).MoneyOrders).Id);
+	}
+
+	[Fact]
+	public async Task LoadAsync_WhenLoadingVersionFiveSale_KeepsTimeAndLeavesSaleDetailsEmpty()
+	{
+		using var repository = CreateRepository();
+		var recordedAt = new DateTimeOffset(2026, 2, 1, 8, 0, 0, TimeSpan.Zero);
+		var basket = CreateCounterSale(recordedAt);
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [], [], [basket]));
+		var document = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		DowngradeTo(document, 5);
+		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
+
+		var loaded = Assert.Single((await repository.LoadAsync()).TransactionBaskets);
+
+		Assert.Equal(recordedAt, loaded.OccurredAtUtc);
+		Assert.Null(loaded.SaleDetails);
+		Assert.Equal(
+			7,
+			JsonNode.Parse(await File.ReadAllTextAsync(DataFilePath))!
+				["schemaVersion"]!.GetValue<int>());
+	}
+
+	[Fact]
+	public async Task SaveAndLoadAsync_CurrentVersionRoundTripsSaleTimeAndDetails()
+	{
+		using var repository = CreateRepository();
+		var recordedAt = new DateTimeOffset(2026, 2, 1, 8, 0, 0, TimeSpan.Zero);
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [], [], [CreateCounterSale(recordedAt)]));
+
+		var loaded = Assert.Single((await repository.LoadAsync()).TransactionBaskets);
+
+		Assert.Equal(recordedAt, loaded.OccurredAtUtc);
+		Assert.Equal(
+			new CounterSaleDetails("COUNTER01", "STAFF01", "Cash"),
+			loaded.SaleDetails);
+		Assert.Equal(
+			7,
+			JsonNode.Parse(await File.ReadAllTextAsync(DataFilePath))!
+				["schemaVersion"]!.GetValue<int>());
+	}
+
+	[Theory]
+	[InlineData(4, "occurredAtUtc")]
+	[InlineData(6, "saleDetails")]
+	public async Task LoadAsync_WhenOlderVersionContainsNewerSaleField_RejectsWithoutRewriting(
+		int version,
+		string keptField)
+	{
+		using var repository = CreateRepository();
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [], [],
+			[CreateCounterSale(DateTimeOffset.UnixEpoch)]));
+		var document = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		var basket = document["transactionBaskets"]![0]!.AsObject();
+		var kept = basket[keptField]!.DeepClone();
+		DowngradeTo(document, version);
+		document["transactionBaskets"]![0]!.AsObject()[keptField] = kept;
+		var contents = document.ToJsonString();
+		await File.WriteAllTextAsync(DataFilePath, contents);
+
+		await Assert.ThrowsAsync<InvalidDataException>(() => repository.LoadAsync());
+		Assert.Equal(contents, await File.ReadAllTextAsync(DataFilePath));
+	}
+
+	[Fact]
+	public async Task LoadAsync_WhenVersionFiveMoneyOrderHasAnId_RejectsSnapshot()
+	{
+		using var repository = CreateRepository();
+		await repository.SaveAsync(new ApexPostSnapshot(
+			[], [], [], [], [], [], [CreateMoneyOrder()], [], []));
+		var document = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		document["schemaVersion"] = 5;
+		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
+
+		await Assert.ThrowsAsync<InvalidDataException>(() => repository.LoadAsync());
+	}
+
+	[Theory]
+	[InlineData(0)]
+	[InlineData(8)]
+	public async Task LoadAsync_WhenSchemaVersionIsUnsupported_RejectsSnapshot(int version)
+	{
+		using var repository = CreateRepository();
+		await repository.SaveAsync(CreateSnapshot());
+		var document = JsonNode.Parse(
+			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
+		document["schemaVersion"] = version;
+		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
+
+		await Assert.ThrowsAsync<InvalidDataException>(() => repository.LoadAsync());
 	}
 
 	[Fact]
@@ -212,7 +319,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 
 		var document = JsonNode.Parse(
 			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
-		document["schemaVersion"] = 1;
+		DowngradeTo(document, 1);
 		foreach (var persistedBasket in document["transactionBaskets"]!.AsArray())
 			persistedBasket!.AsObject().Remove("id");
 		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
@@ -223,7 +330,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 
 		var persistedAfterMigration = JsonNode.Parse(
 			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
-		Assert.Equal(4, persistedAfterMigration["schemaVersion"]!.GetValue<int>());
+		Assert.Equal(7, persistedAfterMigration["schemaVersion"]!.GetValue<int>());
 		Assert.Equal(
 			migratedBasket.Id,
 			persistedAfterMigration["transactionBaskets"]![0]!["id"]!
@@ -255,7 +362,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 
 		var document = JsonNode.Parse(
 			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
-		document["schemaVersion"] = 3;
+		DowngradeTo(document, 3);
 		var persistedBasket = document["transactionBaskets"]![0]!.AsObject();
 		persistedBasket.Remove("branchCode");
 		persistedBasket["lineItems"]![0]!.AsObject().Remove("shippingItem");
@@ -267,7 +374,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			.LineItems.Single().ShippingItem);
 		var migrated = JsonNode.Parse(
 			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
-		Assert.Equal(4, migrated["schemaVersion"]!.GetValue<int>());
+		Assert.Equal(7, migrated["schemaVersion"]!.GetValue<int>());
 	}
 
 	[Fact]
@@ -278,7 +385,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 			[], [], [], [], [], [], [CreateMoneyOrder()], [], []));
 		var document = JsonNode.Parse(
 			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
-		document["schemaVersion"] = 2;
+		DowngradeTo(document, 2);
 		await File.WriteAllTextAsync(DataFilePath, document.ToJsonString());
 
 		var loaded = await repository.LoadAsync();
@@ -286,7 +393,7 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 		Assert.Single(loaded.MoneyOrders);
 		var persistedAfterMigration = JsonNode.Parse(
 			await File.ReadAllTextAsync(DataFilePath))!.AsObject();
-		Assert.Equal(4, persistedAfterMigration["schemaVersion"]!.GetValue<int>());
+		Assert.Equal(7, persistedAfterMigration["schemaVersion"]!.GetValue<int>());
 	}
 
 	[Fact]
@@ -584,6 +691,54 @@ public sealed class JsonApexPostRepositoryTests : IAsyncLifetime
 	}
 
 	private string DataFilePath => Path.Combine(_storageDirectory, "apexpost.json");
+
+	// Turns a file saved at the current version into the shape an older
+	// version wrote, by removing the fields that version did not have:
+	// money-order IDs, statuses and basket links (6), sale details (7) and
+	// transaction times (5).
+	private static void DowngradeTo(JsonObject document, int version)
+	{
+		document["schemaVersion"] = version;
+		foreach (var basket in document["transactionBaskets"]!.AsArray())
+		{
+			var persistedBasket = basket!.AsObject();
+			if (version < 7)
+				persistedBasket.Remove("saleDetails");
+			if (version < 5)
+				persistedBasket.Remove("occurredAtUtc");
+			if (version < 6)
+			{
+				foreach (var line in persistedBasket["lineItems"]!.AsArray())
+					line!.AsObject().Remove("moneyOrderId");
+			}
+		}
+
+		if (version < 6)
+		{
+			foreach (var order in document["moneyOrders"]!.AsArray())
+			{
+				order!.AsObject().Remove("id");
+				order.AsObject().Remove("status");
+			}
+		}
+	}
+
+	private static TransactionBasket CreateCounterSale(DateTimeOffset occurredAtUtc)
+	{
+		var basket = new TransactionBasket(
+			Guid.NewGuid(),
+			"INR",
+			new Dictionary<TaxCategory, decimal>
+			{
+				[TaxCategory.Standard] = 0.1m
+			},
+			new BranchCode("DEL01"),
+			occurredAtUtc,
+			new CounterSaleDetails("COUNTER01", "STAFF01", "Cash"));
+		basket.AddLineItem(new TransactionLineItem(CreateProduct(), 1));
+		basket.Pay();
+		return basket;
+	}
 
 	private JsonApexPostRepository CreateRepository() =>
 		new(_storageDirectory);

@@ -2,23 +2,38 @@ using System.Runtime.ExceptionServices;
 using System.Diagnostics;
 using ApexPost.Application.Auditing;
 using ApexPost.Web.Middleware;
-using Microsoft.AspNetCore.Mvc.Infrastructure;
+using Microsoft.AspNetCore.Mvc.Abstractions;
 using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace ApexPost.Web.Filters;
 
+// Records [Audited] actions only. The record is written after the result has
+// executed, so the status code is the one actually sent (302 for a redirect,
+// 400/401/409 for a redisplayed form) rather than the 200 default that the
+// response still carries while the action filter runs.
 public sealed class AuditActionFilter(
 	IAuditStore auditStore,
-	ILogger<AuditActionFilter> logger) : IAsyncActionFilter
+	ILogger<AuditActionFilter> logger) : IAsyncActionFilter, IAsyncAlwaysRunResultFilter
 {
+	private static readonly object PendingAuditKey = new();
+
 	public async Task OnActionExecutionAsync(
 		ActionExecutingContext context,
 		ActionExecutionDelegate next)
 	{
-		var startedAt = Stopwatch.GetTimestamp();
+		if (!IsAudited(context.ActionDescriptor))
+		{
+			await next().ConfigureAwait(false);
+			return;
+		}
+
+		var pending = new PendingAudit(
+			Stopwatch.GetTimestamp(),
+			GetSanitizedRouteValues(context));
+		context.HttpContext.Items[PendingAuditKey] = pending;
+
 		ActionExecutedContext? executedContext = null;
 		Exception? escapedException = null;
-
 		try
 		{
 			executedContext = await next().ConfigureAwait(false);
@@ -28,24 +43,104 @@ public sealed class AuditActionFilter(
 			escapedException = exception;
 		}
 
-		var outcome = escapedException is not null ||
-			executedContext?.Exception is not null
-				? "Failed"
-				: executedContext?.Canceled == true
-					? "Canceled"
-					: "Succeeded";
-		var actionFailed = escapedException is not null ||
-			executedContext?.Exception is not null;
+		// An unhandled action exception produces no MVC result; the exception
+		// handler middleware answers 500, so record that now. No exception
+		// filters are registered that could turn it into another status.
+		if (escapedException is not null ||
+			executedContext is { Exception: not null, ExceptionHandled: false })
+		{
+			await AppendAsync(
+				context,
+				pending,
+				StatusCodes.Status500InternalServerError,
+				actionFailed: true).ConfigureAwait(false);
+		}
+
+		if (escapedException is not null)
+		{
+			ExceptionDispatchInfo.Capture(escapedException).Throw();
+		}
+	}
+
+	// Lets an audited action name the record it acted on when that ID is not
+	// in the route, such as a sale's transaction ID, which is posted in the
+	// form. Only allow-listed, non-sensitive keys are kept; outside an
+	// audited action this does nothing.
+	public static void AddAuditValue(
+		HttpContext httpContext,
+		string key,
+		string? value)
+	{
+		ArgumentNullException.ThrowIfNull(httpContext);
+		if (httpContext.Items.TryGetValue(PendingAuditKey, out var item) &&
+			item is PendingAudit { Written: false } pending &&
+			IsAllowedRouteKey(key) &&
+			!string.IsNullOrWhiteSpace(value))
+		{
+			pending.RouteValues[key] = value.Trim();
+		}
+	}
+
+	public async Task OnResultExecutionAsync(
+		ResultExecutingContext context,
+		ResultExecutionDelegate next)
+	{
+		if (!context.HttpContext.Items.TryGetValue(PendingAuditKey, out var item) ||
+			item is not PendingAudit { Written: false } pending)
+		{
+			await next().ConfigureAwait(false);
+			return;
+		}
+
+		ResultExecutedContext? executedContext = null;
+		Exception? escapedException = null;
+		try
+		{
+			executedContext = await next().ConfigureAwait(false);
+		}
+		catch (Exception exception)
+		{
+			escapedException = exception;
+		}
+
+		var resultFailed = escapedException is not null ||
+			executedContext is { Exception: not null, ExceptionHandled: false };
+		var response = context.HttpContext.Response;
+		var statusCode = resultFailed && !response.HasStarted
+			? StatusCodes.Status500InternalServerError
+			: response.StatusCode;
+
+		await AppendAsync(
+			context,
+			pending,
+			statusCode,
+			resultFailed).ConfigureAwait(false);
+
+		if (escapedException is not null)
+		{
+			ExceptionDispatchInfo.Capture(escapedException).Throw();
+		}
+	}
+
+	private async Task AppendAsync(
+		FilterContext context,
+		PendingAudit pending,
+		int statusCode,
+		bool actionFailed)
+	{
+		pending.Written = true;
 		var elapsedMilliseconds =
-			Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+			Stopwatch.GetElapsedTime(pending.StartedAt).TotalMilliseconds;
 		var controller =
 			context.ActionDescriptor.RouteValues["controller"] ?? "Unknown";
 		var action =
 			context.ActionDescriptor.RouteValues["action"] ?? "Unknown";
-		var statusCode = ResolveStatusCode(
-			executedContext,
-			context.HttpContext.Response.StatusCode,
-			actionFailed);
+		var outcome = actionFailed || statusCode >= 500
+			? "Failed"
+			: statusCode >= 400
+				? "Rejected"
+				: "Succeeded";
+		var user = context.HttpContext.User;
 
 		var record = new AuditRecord(
 			DateTimeOffset.UtcNow,
@@ -55,10 +150,10 @@ public sealed class AuditActionFilter(
 			outcome,
 			statusCode,
 			elapsedMilliseconds,
-			GetSanitizedRouteValues(context),
-			context.HttpContext.User.FindFirst("StaffId")?.Value,
-			context.HttpContext.User.FindFirst("Role")?.Value,
-			context.HttpContext.User.FindFirst("BranchCode")?.Value,
+			pending.RouteValues,
+			user.FindFirst("StaffId")?.Value,
+			user.FindFirst("Role")?.Value,
+			user.FindFirst("BranchCode")?.Value,
 			context.HttpContext.Items.TryGetValue(
 				CorrelationIdMiddleware.HttpContextItemKey,
 				out var correlationId)
@@ -67,9 +162,10 @@ public sealed class AuditActionFilter(
 
 		try
 		{
-			await auditStore.AppendAsync(
-				record,
-				context.HttpContext.RequestAborted).ConfigureAwait(false);
+			// Not RequestAborted: the business action has already run, so a
+			// client disconnecting must not drop its audit record.
+			await auditStore.AppendAsync(record, CancellationToken.None)
+				.ConfigureAwait(false);
 		}
 		catch (Exception auditException) when (actionFailed)
 		{
@@ -77,31 +173,12 @@ public sealed class AuditActionFilter(
 				auditException,
 				"Failed to append audit record while preserving an MVC action exception.");
 		}
-
-		if (escapedException is not null)
-		{
-			ExceptionDispatchInfo.Capture(escapedException).Throw();
-		}
 	}
 
-	private static int ResolveStatusCode(
-		ActionExecutedContext? executedContext,
-		int responseStatusCode,
-		bool actionFailed)
-	{
-		if (executedContext?.Result is IStatusCodeActionResult statusResult &&
-			statusResult.StatusCode is int statusCode)
-		{
-			return statusCode;
-		}
+	private static bool IsAudited(ActionDescriptor descriptor) =>
+		descriptor.EndpointMetadata.Any(metadata => metadata is AuditedAttribute);
 
-		if (actionFailed && responseStatusCode == StatusCodes.Status200OK)
-			return StatusCodes.Status500InternalServerError;
-
-		return responseStatusCode;
-	}
-
-	private static IReadOnlyDictionary<string, string> GetSanitizedRouteValues(
+	private static Dictionary<string, string> GetSanitizedRouteValues(
 		ActionExecutingContext context)
 	{
 		var sanitized = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -144,4 +221,14 @@ public sealed class AuditActionFilter(
 		key.Contains("credential", StringComparison.OrdinalIgnoreCase) ||
 		key.Contains("document", StringComparison.OrdinalIgnoreCase) ||
 		key.Contains("card", StringComparison.OrdinalIgnoreCase);
+
+	// State carried from the action stage to the result stage of one request.
+	private sealed class PendingAudit(
+		long startedAt,
+		Dictionary<string, string> routeValues)
+	{
+		public long StartedAt { get; } = startedAt;
+		public Dictionary<string, string> RouteValues { get; } = routeValues;
+		public bool Written { get; set; }
+	}
 }

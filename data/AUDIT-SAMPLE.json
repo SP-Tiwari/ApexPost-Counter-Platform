@@ -1,17 +1,14 @@
-{
-  "timestampUtc": "2026-01-01T12:00:00+00:00",
-  "controller": "Transactions",
-  "action": "Create",
-  "description": "Executed Transactions.Create",
-  "outcome": "Succeeded",
-  "statusCode": 200,
-  "durationMilliseconds": 12.5,
-  "routeValues": {
-    "controller": "Transactions",
-    "action": "Create"
-  },
-  "staffId": "demo-staff-01",
-  "staffRole": "CounterClerk",
-  "branchCode": "DM01",
-  "correlationId": "sample-correlation-id"
-}
+[
+  {"timestampUtc":"2026-10-29T12:43:07.9700728+00:00","controller":"Account","action":"SignIn","description":"Executed Account.SignIn","outcome":"Rejected","statusCode":401,"durationMilliseconds":160.5711,"routeValues":{"action":"SignIn","controller":"Account"},"staffId":null,"staffRole":null,"branchCode":null,"correlationId":"26d1820c8ba74bbeaf114ddb1e1b3a8d"},
+  {"timestampUtc":"2026-10-29T12:43:08.1617207+00:00","controller":"Account","action":"SignIn","description":"Executed Account.SignIn","outcome":"Rejected","statusCode":400,"durationMilliseconds":3.4801,"routeValues":{"action":"SignIn","controller":"Account"},"staffId":null,"staffRole":null,"branchCode":null,"correlationId":"83243087f71a4c9092ded417a189ee1b"},
+  {"timestampUtc":"2026-10-29T12:43:08.4754885+00:00","controller":"Account","action":"SignIn","description":"Executed Account.SignIn","outcome":"Succeeded","statusCode":302,"durationMilliseconds":143.7403,"routeValues":{"action":"SignIn","controller":"Account"},"staffId":"demo-staff-02","staffRole":"BranchManager","branchCode":"DM01","correlationId":"8f37c5e12fa849b9ba6ca9d1f5617425"},
+  {"timestampUtc":"2026-10-29T12:43:08.9026743+00:00","controller":"Stock","action":"Adjust","description":"Executed Stock.Adjust","outcome":"Rejected","statusCode":400,"durationMilliseconds":8.5343,"routeValues":{"action":"Adjust","controller":"Stock"},"staffId":"demo-staff-02","staffRole":"BranchManager","branchCode":"DM01","correlationId":"decd8505c8bc4d62b2b9b4175f226b67"},
+  {"timestampUtc":"2026-10-29T12:43:09.1764391+00:00","controller":"Stock","action":"Adjust","description":"Executed Stock.Adjust","outcome":"Succeeded","statusCode":302,"durationMilliseconds":10.2922,"routeValues":{"action":"Adjust","controller":"Stock"},"staffId":"demo-staff-02","staffRole":"BranchManager","branchCode":"DM01","correlationId":"a875f126bfd84617a450d7576ea9fb76"},
+  {"timestampUtc":"2026-10-29T12:43:09.9628139+00:00","controller":"Transactions","action":"Create","description":"Executed Transactions.Create","outcome":"Succeeded","statusCode":302,"durationMilliseconds":33.5519,"routeValues":{"action":"Create","controller":"Transactions","transactionId":"ed9f6cf7-2674-437b-a6e7-97c9af0625cf"},"staffId":"demo-staff-02","staffRole":"BranchManager","branchCode":"DM01","correlationId":"0658f3b95b12414e931d92b46335fe4a"},
+  {"timestampUtc":"2026-10-29T12:43:10.2302026+00:00","controller":"Transactions","action":"Void","description":"Executed Transactions.Void","outcome":"Rejected","statusCode":400,"durationMilliseconds":6.0749,"routeValues":{"action":"Void","controller":"Transactions","transactionId":"ed9f6cf7-2674-437b-a6e7-97c9af0625cf"},"staffId":"demo-staff-02","staffRole":"BranchManager","branchCode":"DM01","correlationId":"83b97e05f6fc4c6aa6f1182a5c6ddced"},
+  {"timestampUtc":"2026-10-29T12:43:10.444733+00:00","controller":"Transactions","action":"Void","description":"Executed Transactions.Void","outcome":"Succeeded","statusCode":302,"durationMilliseconds":22.28,"routeValues":{"action":"Void","controller":"Transactions","transactionId":"ed9f6cf7-2674-437b-a6e7-97c9af0625cf"},"staffId":"demo-staff-02","staffRole":"BranchManager","branchCode":"DM01","correlationId":"4e333ae0f47a4cd3a9354f5313638eb8"},
+  {"timestampUtc":"2026-10-29T12:43:10.651465+00:00","controller":"Transactions","action":"Refund","description":"Executed Transactions.Refund","outcome":"Rejected","statusCode":409,"durationMilliseconds":9.8853,"routeValues":{"action":"Refund","controller":"Transactions","transactionId":"ed9f6cf7-2674-437b-a6e7-97c9af0625cf"},"staffId":"demo-staff-02","staffRole":"BranchManager","branchCode":"DM01","correlationId":"f0df5111e984463a93bd40f831e338af"},
+  {"timestampUtc":"2026-10-29T12:43:11.0193928+00:00","controller":"Account","action":"SignIn","description":"Executed Account.SignIn","outcome":"Succeeded","statusCode":302,"durationMilliseconds":140.5899,"routeValues":{"action":"SignIn","controller":"Account"},"staffId":"demo-staff-01","staffRole":"CounterClerk","branchCode":"DM01","correlationId":"2ad96cc1a3a14be3a64509753e079e94"},
+  {"timestampUtc":"2026-10-29T12:43:11.6668141+00:00","controller":"Transactions","action":"Create","description":"Executed Transactions.Create","outcome":"Succeeded","statusCode":302,"durationMilliseconds":6.237,"routeValues":{"action":"Create","controller":"Transactions","transactionId":"6e658aaa-51de-4a47-b0e3-80048a8ce356"},"staffId":"demo-staff-01","staffRole":"CounterClerk","branchCode":"DM01","correlationId":"8097dba54fc945d6b5e56e83cc74ec04"},
+  {"timestampUtc":"2026-10-29T12:43:11.9008451+00:00","controller":"Account","action":"SignOut","description":"Executed Account.SignOut","outcome":"Succeeded","statusCode":302,"durationMilliseconds":2.4573,"routeValues":{"action":"SignOut","controller":"Account"},"staffId":"demo-staff-01","staffRole":"CounterClerk","branchCode":"DM01","correlationId":"8c179943f0274cdd9a4a2d97afd35374"}
+]

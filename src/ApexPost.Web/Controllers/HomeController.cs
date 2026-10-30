@@ -2,11 +2,29 @@ using System.Diagnostics;
 
 namespace ApexPost.Web.Controllers;
 
-public class HomeController : Controller
+public class HomeController(BranchDashboardApplicationService dashboard) : Controller
 {
-    public IActionResult Index()
+    // Signed-in staff see their branch dashboard; anonymous visitors see a
+    // sign-in prompt.
+    public async Task<IActionResult> Index(CancellationToken cancellationToken)
     {
-        return View();
+        var staffId = User.FindFirst("StaffId")?.Value;
+        if (string.IsNullOrWhiteSpace(staffId))
+            return View(model: null);
+
+        try
+        {
+            return View(await dashboard.GetDashboardAsync(
+                staffId, cancellationToken));
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
     }
 
     public IActionResult Privacy()

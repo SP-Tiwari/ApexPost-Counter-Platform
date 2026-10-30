@@ -221,7 +221,7 @@ public sealed class LowStockReportsControllerTests : IAsyncLifetime
 	private static WebApplicationFactory<Program> CreateFactory(
 		string storageDirectory,
 		string? threshold) =>
-		new WebApplicationFactory<Program>()
+		new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", storageDirectory);

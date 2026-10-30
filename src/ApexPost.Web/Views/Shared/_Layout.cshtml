@@ -32,6 +32,12 @@
                                 <a class="nav-link text-dark" asp-controller="Account" asp-action="SignIn">Staff sign-in</a>
                             </li>
                         }
+                        else
+                        {
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-controller="Catalogue" asp-action="Index">Catalogue</a>
+                            </li>
+                        }
                         @if (User.IsInRole("BranchManager"))
                         {
                             <li class="nav-item">

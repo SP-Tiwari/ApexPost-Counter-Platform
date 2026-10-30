@@ -1,51 +1,48 @@
 # Architecture and request flow
 
-## Layered architecture
+The layer, domain and pipeline diagrams, the middleware-versus-filter table and the threat model are in [DESIGN.md](../DESIGN.md). This page follows a single counter sale through the system.
+
+## A counter sale, end to end
 
 ```mermaid
-flowchart LR
-    Web[ASP.NET Core MVC / Web] --> Application[Application services and abstractions]
-    Infrastructure[JSON repositories and audit store] --> Application
-    Application --> Domain[Domain entities and rules]
-    Infrastructure --> Domain
-    Tests[Domain, Application, Infrastructure, and Web tests] --> Web
-    Tests --> Application
-    Tests --> Infrastructure
-    Tests --> Domain
-    Web --> Infrastructure
+sequenceDiagram
+    autonumber
+    actor Clerk
+    participant MW as Middleware pipeline
+    participant F as MVC filters
+    participant C as TransactionsController
+    participant S as MixedBasketApplicationService
+    participant V as IIdentityVerificationService
+    participant R as JsonApexPostRepository
+    participant P as DomainEventPublisher
+    Clerk->>MW: POST /Transactions/Create (cookie, antiforgery token)
+    MW->>MW: correlation ID, headers, routing, sign-in cookie, role check
+    MW->>F: matched [Audited] action
+    F->>F: ValidationActionFilter (ModelState)
+    F->>C: Create(model)
+    C->>S: CreateAndProcessAsync(staffId, CounterBasketRequest)
+    S->>V: verify identity for money orders (with timeout), before taking the lock
+    S->>R: UpdateAsync(snapshot => ...)
+    R->>R: lock, load, apply rules, deduct stock, add lines, save to temp file, move into place
+    R-->>S: committed snapshot
+    S->>P: publish TransactionCompleted, StockLow, MoneyOrderIssued, ...
+    P-->>P: SimulatedNotificationSender logs notifications
+    S-->>C: transaction ID
+    C-->>F: RedirectToAction(Details)
+    F->>F: AuditActionFilter writes record with status 302
+    F-->>Clerk: 302 to /Transactions/{id}
 ```
 
-The Web project is the composition root. Application services use `IApexPostRepository`; Infrastructure implements the repository and reconstructs domain entities through validating constructors. The repository stores a versioned snapshot in `apexpost.json`, while audit events are appended as JSON Lines to a separate audit file. Staff credentials are separately provisioned and are not part of the business snapshot.
-
-## HTTP middleware pipeline
-
-```mermaid
-flowchart TD
-    Request[HTTP request] --> Correlation[CorrelationIdMiddleware]
-    Correlation --> Exceptions[Exception handler / Problem Details]
-    Exceptions --> HSTS[HSTS outside Development]
-    HSTS --> Headers[SecurityHeadersMiddleware]
-    Headers --> Maintenance[MaintenanceModeMiddleware]
-    Maintenance --> HTTPS[HTTPS redirection]
-    HTTPS --> Routing[Routing]
-    Routing --> CORS[Configured exact-origin CORS]
-    CORS --> Partner[API key and IP restriction]
-    Partner --> PartnerRate[Validated partner rate limiter]
-    PartnerRate --> Rate[Staff sign-in rate limiter]
-    Rate --> Authentication[Cookie authentication]
-    Authentication --> Authorization[Authorization]
-    Authorization --> MVC[MVC endpoint and AuditActionFilter]
-    MVC --> Response[HTTP response]
-```
-
-Correlation is established before exception handling so error responses can include the same ID. Security headers wrap maintenance and downstream responses. Routing precedes endpoint-specific partner restrictions and rate-limit policy selection; authentication and authorization run before MVC actions.
-
-The CORS policy is configured by `ParcelTracking:AllowedOrigins`, defaults to no allowed origins, and does not permit credentials. Partner rate limiting runs only after a request passes the API-key/IP middleware; its identity is derived from the validated API-key digest, not request headers. `/health` returns a minimal liveness response. No parcel-status endpoint is present because the persisted shipping model has no authoritative tracking status or event history.
+1. **Before MVC:** middleware establishes the correlation ID, security headers and identity. `[RequireApiKey]` and `[RequireAdminNetwork]` checks also happen here, though they don't apply to this endpoint.
+2. **Validation:** filters run around the action. Invalid input is redisplayed before the action body runs.
+3. **Slow external calls:** identity verification runs before the repository lock is taken, so a slow provider never holds up other sales.
+4. **One atomic update:** every rule check and state change for the sale happens inside one `UpdateAsync` callback. If anything fails, nothing is saved and no events are published.
+5. **After commit:** events are published only after the save. The audit record is written after the redirect result has executed, so it records the real 302.
 
 ## Data and security boundaries
 
-- Branch scope is resolved from the persisted active staff record identified by the authenticated `StaffId`; browser-supplied branch codes do not establish authority.
-- Transaction baskets with missing legacy branch attribution are not assigned automatically and are not available to branch-scoped pages.
-- API keys and credential hashes are not stored in the business snapshot, sample files, or audit records.
-- `AUDIT-SAMPLE.json` demonstrates the `AuditRecord` property shape only. Runtime audit data is append-only JSONL and must be protected as operational data.
-- Demo snapshot initialization is opt-in and atomic with respect to calls sharing the singleton JSON repository instance. The repository lock does not coordinate multiple processes or separate repository instances.
+- **Branch authority:** branch scope comes from the persisted staff record behind the authenticated `StaffId`. Branch codes in forms or cookie claims are never trusted for authority.
+- **Unattributed legacy sales:** baskets with no branch attribution are not assigned to a branch and do not appear on branch pages.
+- **Secrets:** API keys, passwords and credential hashes are not stored in the business snapshot, sample files or audit records. Credentials have their own file, and secrets come from user-secrets or the environment.
+- **Audit sample:** `data/AUDIT-SAMPLE.json` holds real `audit-events.jsonl` lines from a local run on seeded demo data, exported unchanged as a JSON array. Runtime audit data is append-only JSON Lines and should be protected as operational data.
+- **Single-process locking:** the repository lock coordinates one process only. Separate processes sharing a storage folder are not coordinated.

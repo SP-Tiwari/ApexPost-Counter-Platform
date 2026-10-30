@@ -14,6 +14,8 @@ public sealed class TransactionBasketSnapshot
 	public BranchCode? BranchCode { get; }
 	public TransactionPaymentStatus PaymentStatus { get; }
 	public IReadOnlyList<DomainNotification> Notifications { get; }
+	public DateTimeOffset? OccurredAtUtc { get; }
+	public CounterSaleDetails? SaleDetails { get; }
 
 	internal TransactionBasketSnapshot(
 		Guid id,
@@ -25,7 +27,9 @@ public sealed class TransactionBasketSnapshot
 		IEnumerable<TransactionLineItem> lineItems,
 		BranchCode? branchCode,
 		TransactionPaymentStatus paymentStatus,
-		IEnumerable<DomainNotification> notifications)
+		IEnumerable<DomainNotification> notifications,
+		DateTimeOffset? occurredAtUtc,
+		CounterSaleDetails? saleDetails)
 	{
 		Id = id;
 		Currency = currency;
@@ -38,5 +42,7 @@ public sealed class TransactionBasketSnapshot
 		BranchCode = branchCode;
 		PaymentStatus = paymentStatus;
 		Notifications = Array.AsReadOnly(notifications.ToArray());
+		OccurredAtUtc = occurredAtUtc;
+		SaleDetails = saleDetails;
 	}
 }

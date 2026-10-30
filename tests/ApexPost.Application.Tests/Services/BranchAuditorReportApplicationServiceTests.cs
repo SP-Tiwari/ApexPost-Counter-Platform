@@ -1,5 +1,5 @@
 using ApexPost.Domain.Reporting;
-using NSubstitute;
+using ApexPost.Application.Tests.TestDoubles;
 
 namespace ApexPost.Application.Tests.Services;
 
@@ -67,34 +67,28 @@ public sealed class BranchAuditorReportApplicationServiceTests
 	[Fact]
 	public async Task GetReportAsync_MissingStaffIdIsDeniedWithoutLoading()
 	{
-		var repository = Substitute.For<IApexPostRepository>();
+		var repository = new FakeApexPostRepository();
 		var service = new BranchAuditorReportApplicationService(repository);
 
 		await Assert.ThrowsAsync<UnauthorizedAccessException>(
 			() => service.GetReportAsync(" "));
 
-		await repository.DidNotReceive()
-			.LoadAsync(Arg.Any<CancellationToken>());
+		Assert.Equal(0, repository.LoadCount);
 	}
 
 	private static BranchAuditorReportApplicationService CreateService(
 		Staff staff,
-		IEnumerable<MoneyOrder> moneyOrders)
-	{
-		var repository = Substitute.For<IApexPostRepository>();
-		repository.LoadAsync(Arg.Any<CancellationToken>())
-			.Returns(new ApexPostSnapshot(
-				[],
-				[staff],
-				[],
-				[],
-				[],
-				[],
-				moneyOrders,
-				[],
-				[]));
-		return new BranchAuditorReportApplicationService(repository);
-	}
+		IEnumerable<MoneyOrder> moneyOrders) =>
+		new(new FakeApexPostRepository(new ApexPostSnapshot(
+			[],
+			[staff],
+			[],
+			[],
+			[],
+			[],
+			moneyOrders,
+			[],
+			[])));
 
 	private static Staff CreateStaff(
 		string id,

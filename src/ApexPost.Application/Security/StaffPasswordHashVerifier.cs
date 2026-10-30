@@ -5,7 +5,6 @@ namespace ApexPost.Application.Security;
 public static class StaffPasswordHashVerifier
 {
 	public const int CurrentVersion = 1;
-	public const int DefaultIterations = 210_000;
 	public const int SaltSizeBytes = 16;
 	public const int HashSizeBytes = 32;
 
@@ -61,13 +60,16 @@ public static class StaffPasswordHashVerifier
 		}
 	}
 
+	// Uses the same work factor as every credential StaffPasswordHasher
+	// creates, so an unknown account takes as long to reject as a wrong
+	// password for a real one.
 	public static void PerformDummyVerification(string password)
 	{
 		ArgumentNullException.ThrowIfNull(password);
 		_ = Rfc2898DeriveBytes.Pbkdf2(
 			password,
 			DummySalt,
-			DefaultIterations,
+			MinimumIterations,
 			HashAlgorithmName.SHA256,
 			HashSizeBytes);
 	}

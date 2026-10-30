@@ -12,18 +12,249 @@ using Microsoft.Extensions.Options;
 
 namespace ApexPost.Web.IntegrationTests;
 
+// Money orders are issued as lines of a counter sale (POST /Transactions/Create)
+// and listed on /MoneyOrders/Index. The simulated verifier accepts only the
+// configured document types, so its decision is deterministic here.
 public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 {
-	private const string StaffId = "money-order-manager";
+	private const string StaffId = MoneyOrdersControllerTestsStaff.Id;
 	private const string FullDocumentIdentifier = "DOC-SECRET-987654";
+	private const string AcceptedDocumentType = "Passport";
 	private string _storageDirectory = null!;
 	private WebApplicationFactory<Program> _factory = null!;
+
+	private string DataFilePath =>
+		Path.Combine(_storageDirectory, "apexpost.json");
 
 	public Task InitializeAsync()
 	{
 		_storageDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-MoneyOrders-{Guid.NewGuid():N}");
-		_factory = new WebApplicationFactory<Program>()
+		_factory = CreateFactory(verificationLatencyMilliseconds: 0);
+		return Task.CompletedTask;
+	}
+
+	public async Task DisposeAsync()
+	{
+		await _factory.DisposeAsync();
+		if (Directory.Exists(_storageDirectory))
+			Directory.Delete(_storageDirectory, recursive: true);
+	}
+
+	[Fact]
+	public async Task MoneyOrderList_RequiresBranchManager()
+	{
+		using var anonymousClient = CreateClient(null);
+		Assert.Equal(
+			HttpStatusCode.Unauthorized,
+			(await anonymousClient.GetAsync("/MoneyOrders/Index")).StatusCode);
+
+		using var clerkClient = CreateClient("CounterClerk");
+		Assert.Equal(
+			HttpStatusCode.Forbidden,
+			(await clerkClient.GetAsync("/MoneyOrders/Index")).StatusCode);
+	}
+
+	[Fact]
+	public async Task StandaloneMoneyOrderForm_NoLongerExists()
+	{
+		await SeedAsync();
+		using var client = CreateClient("BranchManager");
+
+		Assert.Equal(
+			HttpStatusCode.NotFound,
+			(await client.GetAsync("/MoneyOrders/Create")).StatusCode);
+	}
+
+	[Fact]
+	public async Task Index_ShowsOnlyKnownOrdersFromAuthenticatedManagersPersistedBranch()
+	{
+		await SeedAsync(
+		[
+			CreateMoneyOrder("Local Sender", "BR01"),
+			CreateMoneyOrder("Other Branch Sender", "BR02"),
+			CreateMoneyOrder("Legacy Sender", null)
+		]);
+		using var client = CreateClient("BranchManager");
+		client.DefaultRequestHeaders.Add("X-Money-Order-Branch", "BR02");
+
+		var response = await client.GetAsync("/MoneyOrders/Index");
+		var content = await response.Content.ReadAsStringAsync();
+
+		Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+		Assert.Contains("Local Sender", content, StringComparison.Ordinal);
+		Assert.DoesNotContain("Other Branch Sender", content, StringComparison.Ordinal);
+		Assert.DoesNotContain("Legacy Sender", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task Index_ShowsOnlyTheMaskedDocumentNumber()
+	{
+		await SeedAsync(
+		[
+			new MoneyOrder(
+				new Money(1500m, "INR"),
+				"Verified Sender",
+				"Recipient",
+				new Money(25m, "INR"),
+				new IdentityVerification(
+					AcceptedDocumentType, FullDocumentIdentifier, true),
+				new BranchCode("BR01"))
+		]);
+		using var client = CreateClient("BranchManager");
+
+		var content = await (await client.GetAsync("/MoneyOrders/Index"))
+			.Content.ReadAsStringAsync();
+
+		Assert.Contains("*************7654", content, StringComparison.Ordinal);
+		Assert.DoesNotContain(FullDocumentIdentifier, content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task Sale_LowValueMoneyOrderIsIssuedAsABasketLineWithConfiguredFee()
+	{
+		await SeedAsync();
+		using var client = CreateClient("BranchManager");
+		var (transactionId, token) = await GetCreateFormAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateSaleForm(transactionId, token, 500m));
+
+		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+		var snapshot = await LoadSnapshotAsync();
+		var order = Assert.Single(snapshot.MoneyOrders);
+		Assert.Equal(new Money(500m, "INR"), order.Amount);
+		Assert.Equal(new Money(25m, "INR"), order.Fee);
+		Assert.Null(order.IdentityVerification);
+		var basket = Assert.Single(snapshot.TransactionBaskets);
+		Assert.Equal(transactionId, basket.Id);
+		Assert.Equal(order.Id, Assert.Single(
+			basket.LineItems,
+			line => line.Type == TransactionItemType.MoneyOrder).MoneyOrder!.Id);
+		Assert.Equal(new Money(525m, "INR"), basket.Total);
+	}
+
+	[Fact]
+	public async Task Sale_SubmittedBranchCannotOverridePersistedHomeBranch()
+	{
+		await SeedAsync();
+		using var client = CreateClient("BranchManager");
+		var (transactionId, token) = await GetCreateFormAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateSaleForm(transactionId, token, 500m, branchCode: "BR02"));
+
+		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+		Assert.Equal(
+			new BranchCode("BR01"),
+			Assert.Single((await LoadSnapshotAsync()).MoneyOrders)
+				.ProcessingBranchCode);
+	}
+
+	[Fact]
+	public async Task Sale_HighValueMoneyOrderWithAcceptedDocumentStoresOnlyMaskedNumber()
+	{
+		await SeedAsync();
+		using var client = CreateClient("BranchManager");
+		var (transactionId, token) = await GetCreateFormAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateSaleForm(
+				transactionId, token, 1500m, AcceptedDocumentType));
+
+		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+		var verification = Assert.Single(
+			(await LoadSnapshotAsync()).IdentityVerifications);
+		Assert.True(verification.IsSuccessful);
+		Assert.Equal("*************7654", verification.MaskedDocumentIdentifier);
+		Assert.DoesNotContain(
+			FullDocumentIdentifier,
+			await File.ReadAllTextAsync(DataFilePath),
+			StringComparison.Ordinal);
+	}
+
+	[Theory]
+	[InlineData("Library card")]
+	[InlineData(null)]
+	public async Task Sale_HighValueMoneyOrderWithoutSuccessfulVerificationIsRejected(
+		string? documentType)
+	{
+		await SeedAsync();
+		using var client = CreateClient("BranchManager");
+		var (transactionId, token) = await GetCreateFormAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateSaleForm(transactionId, token, 1500m, documentType));
+
+		Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+		var snapshot = await LoadSnapshotAsync();
+		Assert.Empty(snapshot.MoneyOrders);
+		Assert.Empty(snapshot.TransactionBaskets);
+		Assert.Empty(snapshot.IdentityVerifications);
+		// The redisplayed form never echoes the full document number.
+		Assert.DoesNotContain(
+			FullDocumentIdentifier,
+			await response.Content.ReadAsStringAsync(),
+			StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task Sale_FailedCheckBelowThresholdIsIssuedWithFailedVerification()
+	{
+		await SeedAsync();
+		using var client = CreateClient("BranchManager");
+		var (transactionId, token) = await GetCreateFormAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateSaleForm(transactionId, token, 500m, "Library card"));
+
+		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+		Assert.False(Assert.Single((await LoadSnapshotAsync()).MoneyOrders)
+			.IdentityVerification!.IsSuccessful);
+	}
+
+	[Fact]
+	public async Task Sale_VerificationTimeoutReturns503WithoutIssuing()
+	{
+		await using var slowFactory = CreateFactory(
+			verificationLatencyMilliseconds: 5000,
+			timeoutSeconds: "0.05");
+		await SeedAsync(factory: slowFactory);
+		using var client = CreateClient("BranchManager", slowFactory);
+		var (transactionId, token) = await GetCreateFormAsync(client);
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateSaleForm(
+				transactionId, token, 1500m, AcceptedDocumentType));
+
+		Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+		Assert.Empty((await LoadSnapshotAsync(slowFactory)).MoneyOrders);
+	}
+
+	[Fact]
+	public async Task Sale_RequiresAntiforgeryToken()
+	{
+		await SeedAsync();
+		using var client = CreateClient("BranchManager");
+
+		var response = await client.PostAsync(
+			"/Transactions/Create",
+			CreateSaleForm(Guid.NewGuid(), token: null, 500m));
+
+		Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+		Assert.Empty((await LoadSnapshotAsync()).MoneyOrders);
+	}
+
+	private WebApplicationFactory<Program> CreateFactory(
+		int verificationLatencyMilliseconds,
+		string timeoutSeconds = "5") =>
+		new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", _storageDirectory);
@@ -31,9 +262,26 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 					"Authentication:CredentialFile",
 					Path.Combine(_storageDirectory, "credentials.json"));
 				builder.UseSetting(
+					"Audit:FilePath",
+					Path.Combine(_storageDirectory, "audit-events.jsonl"));
+				builder.UseSetting("Transactions:TaxRates:Standard", "0.1");
+				builder.UseSetting("Transactions:TaxRates:ZeroRated", "0");
+				builder.UseSetting("Transactions:PaymentMethods:0", "Cash");
+				builder.UseSetting(
 					"MoneyOrders:HighValueThreshold:Amount", "1000");
 				builder.UseSetting(
 					"MoneyOrders:HighValueThreshold:Currency", "INR");
+				builder.UseSetting("MoneyOrders:Fee:Amount", "25");
+				builder.UseSetting("MoneyOrders:Fee:TaxCategory", "ZeroRated");
+				builder.UseSetting(
+					"MoneyOrders:Verification:AcceptedDocumentTypes:0",
+					AcceptedDocumentType);
+				builder.UseSetting(
+					"MoneyOrders:Verification:TimeoutSeconds", timeoutSeconds);
+				builder.UseSetting(
+					"MoneyOrders:Verification:SimulatedLatencyMilliseconds",
+					verificationLatencyMilliseconds.ToString(
+						System.Globalization.CultureInfo.InvariantCulture));
 				builder.ConfigureTestServices(services =>
 					services.AddAuthentication(options =>
 					{
@@ -48,182 +296,12 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 						MoneyOrderTestAuthenticationHandler.AuthenticationSchemeName,
 						_ => { }));
 			});
-		return Task.CompletedTask;
-	}
 
-	public async Task DisposeAsync()
+	private HttpClient CreateClient(
+		string? role,
+		WebApplicationFactory<Program>? factory = null)
 	{
-		await _factory.DisposeAsync();
-		if (Directory.Exists(_storageDirectory))
-			Directory.Delete(_storageDirectory, recursive: true);
-	}
-
-	[Fact]
-	public async Task Create_HighValueOrderWithManagerAttestationPersistsOnlyMaskedDocument()
-	{
-		await SeedManagerAsync();
-		using var client = CreateClient("BranchManager");
-		var token = await GetAntiforgeryTokenAsync(client);
-
-		var response = await client.PostAsync(
-			"/MoneyOrders/Create",
-			CreateForm(1500m, true, true, token));
-
-		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
-		Assert.Equal("/MoneyOrders/Index", response.Headers.Location?.OriginalString);
-		var repository = _factory.Services.GetRequiredService<IApexPostRepository>();
-		var snapshot = await repository.LoadAsync();
-		var order = Assert.Single(snapshot.MoneyOrders);
-		Assert.Equal(new Money(1500m, "INR"), order.Amount);
-		var expectedMaskedIdentifier =
-			new string('*', FullDocumentIdentifier.Length - 4)
-			+ FullDocumentIdentifier[^4..];
-		Assert.Equal(
-			expectedMaskedIdentifier,
-			order.IdentityVerification?.MaskedDocumentIdentifier);
-		Assert.Equal(new BranchCode("BR01"), order.ProcessingBranchCode);
-		Assert.Equal(order.IdentityVerification, Assert.Single(snapshot.IdentityVerifications));
-
-		var json = await File.ReadAllTextAsync(
-			Path.Combine(_storageDirectory, "apexpost.json"));
-		Assert.DoesNotContain(FullDocumentIdentifier, json, StringComparison.Ordinal);
-		Assert.Contains(expectedMaskedIdentifier, json, StringComparison.Ordinal);
-	}
-
-	[Fact]
-	public async Task Create_FailedIdentityCheckBelowThresholdPersistsOrder()
-	{
-		await SeedManagerAsync();
-		using var client = CreateClient("BranchManager");
-		var token = await GetAntiforgeryTokenAsync(client);
-
-		var response = await client.PostAsync(
-			"/MoneyOrders/Create",
-			CreateForm(500m, true, false, token));
-
-		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
-		Assert.Equal("/MoneyOrders/Index", response.Headers.Location?.OriginalString);
-		var snapshot = await LoadSnapshotAsync();
-		var order = Assert.Single(snapshot.MoneyOrders);
-		Assert.Equal(new Money(500m, "INR"), order.Amount);
-		Assert.NotNull(order.IdentityVerification);
-		Assert.False(order.IdentityVerification!.IsSuccessful);
-		Assert.Equal(order.IdentityVerification, Assert.Single(snapshot.IdentityVerifications));
-	}
-
-	[Fact]
-	public async Task Create_HighValueOrderWithoutSuccessfulVerificationIsRejected()
-	{
-		await SeedManagerAsync();
-		using var client = CreateClient("BranchManager");
-		var token = await GetAntiforgeryTokenAsync(client);
-
-		var response = await client.PostAsync(
-			"/MoneyOrders/Create",
-			CreateForm(1500m, false, false, token));
-
-		Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-		Assert.Contains(
-			"Identity verification did not succeed or is required",
-			await response.Content.ReadAsStringAsync(),
-			StringComparison.Ordinal);
-		Assert.Empty((await LoadSnapshotAsync()).MoneyOrders);
-	}
-
-	[Fact]
-	public async Task Create_InvalidAmountIsRejectedWithoutPersistence()
-	{
-		await SeedManagerAsync();
-		using var client = CreateClient("BranchManager");
-		var token = await GetAntiforgeryTokenAsync(client);
-		var form = CreateForm(0m, false, false, token);
-
-		var response = await client.PostAsync("/MoneyOrders/Create", form);
-
-		Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-		Assert.Empty((await LoadSnapshotAsync()).MoneyOrders);
-	}
-
-	[Fact]
-	public async Task Create_RequiresAntiforgeryToken()
-	{
-		await SeedManagerAsync();
-		using var client = CreateClient("BranchManager");
-
-		var response = await client.PostAsync(
-			"/MoneyOrders/Create",
-			CreateForm(500m, false, false));
-
-		Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-		Assert.Empty((await LoadSnapshotAsync()).MoneyOrders);
-	}
-
-	[Fact]
-	public async Task MoneyOrderPages_RequireBranchManager()
-	{
-		using var anonymousClient = CreateClient(null);
-		var anonymousResponse = await anonymousClient.GetAsync(
-			"/MoneyOrders/Create");
-		Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
-
-		using var clerkClient = CreateClient("CounterClerk");
-		var clerkResponse = await clerkClient.GetAsync("/MoneyOrders/Create");
-		Assert.Equal(HttpStatusCode.Forbidden, clerkResponse.StatusCode);
-	}
-
-	[Fact]
-	public async Task Index_ShowsOnlyKnownOrdersFromAuthenticatedManagersPersistedBranch()
-	{
-		await SeedOrdersAsync();
-		using var client = CreateClient("BranchManager");
-		client.DefaultRequestHeaders.Add("X-Money-Order-Branch", "BR02");
-
-		var response = await client.GetAsync("/MoneyOrders/Index");
-		var content = await response.Content.ReadAsStringAsync();
-
-		Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-		Assert.Contains("Local Sender", content, StringComparison.Ordinal);
-		Assert.DoesNotContain("Other Branch Sender", content, StringComparison.Ordinal);
-		Assert.DoesNotContain("Legacy Sender", content, StringComparison.Ordinal);
-	}
-
-	[Fact]
-	public async Task Create_SubmittedBranchCannotOverridePersistedManagersHomeBranch()
-	{
-		await SeedManagerAsync();
-		using var client = CreateClient("BranchManager");
-		var token = await GetAntiforgeryTokenAsync(client);
-
-		var response = await client.PostAsync(
-			"/MoneyOrders/Create",
-			CreateForm(500m, false, false, token, "BR02"));
-
-		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
-		Assert.Equal(
-			new BranchCode("BR01"),
-			Assert.Single((await LoadSnapshotAsync()).MoneyOrders)
-				.ProcessingBranchCode);
-	}
-
-	[Fact]
-	public async Task Create_LowValueOrderDoesNotRequireIdentityCheck()
-	{
-		await SeedManagerAsync();
-		using var client = CreateClient("BranchManager");
-		var token = await GetAntiforgeryTokenAsync(client);
-
-		var response = await client.PostAsync(
-			"/MoneyOrders/Create",
-			CreateForm(500m, false, false, token));
-
-		Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
-		var order = Assert.Single((await LoadSnapshotAsync()).MoneyOrders);
-		Assert.Null(order.IdentityVerification);
-	}
-
-	private HttpClient CreateClient(string? role)
-	{
-		var client = _factory.CreateClient(
+		var client = (factory ?? _factory).CreateClient(
 			new WebApplicationFactoryClientOptions
 			{
 				AllowAutoRedirect = false
@@ -233,11 +311,19 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 		return client;
 	}
 
-	private async Task SeedManagerAsync()
-	{
-		await _factory.Services.GetRequiredService<IApexPostRepository>()
+	private Task SeedAsync(
+		IEnumerable<MoneyOrder>? moneyOrders = null,
+		WebApplicationFactory<Program>? factory = null) =>
+		(factory ?? _factory).Services.GetRequiredService<IApexPostRepository>()
 			.SaveAsync(new ApexPostSnapshot(
-				[],
+				[
+					new Branch(
+						new BranchCode("BR01"),
+						"Test Branch",
+						"Region",
+						"09:00-17:00",
+						[new CounterTerminal("COUNTER-1", "Counter")])
+				],
 				[
 					new Staff(
 						StaffId,
@@ -250,46 +336,20 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 				[],
 				[],
 				[],
-				[],
+				moneyOrders ?? [],
 				[],
 				[]));
-	}
 
-	private async Task SeedOrdersAsync()
-	{
-		var repository = _factory.Services
-			.GetRequiredService<IApexPostRepository>();
-		await repository.SaveAsync(new ApexPostSnapshot(
-			[],
-			[
-				new Staff(
-					StaffId,
-					"Test Manager",
-					"money-order-manager@example.test",
-					StaffRole.BranchManager,
-					new BranchCode("BR01"))
-			],
-			[],
-			[],
-			[],
-			[],
-			[
-				CreateMoneyOrder("Local Sender", "BR01"),
-				CreateMoneyOrder("Other Branch Sender", "BR02"),
-				CreateMoneyOrder("Legacy Sender", null)
-			],
-			[],
-			[]));
-	}
-
-	private async Task<ApexPostSnapshot> LoadSnapshotAsync() =>
-		await _factory.Services.GetRequiredService<IApexPostRepository>()
+	private async Task<ApexPostSnapshot> LoadSnapshotAsync(
+		WebApplicationFactory<Program>? factory = null) =>
+		await (factory ?? _factory).Services
+			.GetRequiredService<IApexPostRepository>()
 			.LoadAsync();
 
-	private static async Task<string> GetAntiforgeryTokenAsync(
+	private static async Task<(Guid TransactionId, string Token)> GetCreateFormAsync(
 		HttpClient client)
 	{
-		var response = await client.GetAsync("/MoneyOrders/Create");
+		var response = await client.GetAsync("/Transactions/Create");
 		Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 		var html = await response.Content.ReadAsStringAsync();
 		var token = Regex.Match(
@@ -297,34 +357,39 @@ public sealed class MoneyOrdersControllerTests : IAsyncLifetime
 			"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"")
 			.Groups[1].Value;
 		Assert.False(string.IsNullOrWhiteSpace(token));
-		return token;
+		var transactionId = Regex.Match(
+			html,
+			"name=\"TransactionId\"[^>]*value=\"([A-Fa-f0-9-]+)\"")
+			.Groups[1].Value;
+		return (Guid.Parse(transactionId), token);
 	}
 
-	private static FormUrlEncodedContent CreateForm(
+	private static FormUrlEncodedContent CreateSaleForm(
+		Guid transactionId,
+		string? token,
 		decimal amount,
-		bool documentCheckedInPerson,
-		bool identityCheckPassed,
-		string? antiforgeryToken = null,
+		string? documentType = null,
 		string? branchCode = null)
 	{
 		var values = new List<KeyValuePair<string, string>>
 		{
-			new("Amount", amount.ToString(
+			new("TransactionId", transactionId.ToString()),
+			new("CounterTerminalId", "COUNTER-1"),
+			new("PaymentMethod", "Cash"),
+			new("IncludeMoneyOrder", "true"),
+			new("MoneyOrderAmount", amount.ToString(
 				System.Globalization.CultureInfo.InvariantCulture)),
-			new("Sender", "Test Sender"),
-			new("Recipient", "Test Recipient"),
-			new("Fee", "10"),
-			new("DocumentCheckedInPerson", documentCheckedInPerson.ToString()),
-			new("IdentityCheckPassed", identityCheckPassed.ToString())
+			new("MoneyOrderSender", "Test Sender"),
+			new("MoneyOrderRecipient", "Test Recipient")
 		};
-		if (documentCheckedInPerson)
+		if (documentType is not null)
 		{
-			values.Add(new("DocumentType", "Passport"));
-			values.Add(new("DocumentIdentifier", FullDocumentIdentifier));
+			values.Add(new("MoneyOrderDocumentType", documentType));
+			values.Add(new("MoneyOrderDocumentIdentifier", FullDocumentIdentifier));
 		}
 
-		if (antiforgeryToken is not null)
-			values.Add(new("__RequestVerificationToken", antiforgeryToken));
+		if (token is not null)
+			values.Add(new("__RequestVerificationToken", token));
 		if (branchCode is not null)
 			values.Add(new("BranchCode", branchCode));
 

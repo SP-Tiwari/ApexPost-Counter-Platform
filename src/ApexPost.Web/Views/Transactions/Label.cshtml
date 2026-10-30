@@ -1,0 +1,48 @@
+@model ApexPost.Web.Models.ShippingLabelViewModel
+@{
+    ViewData["Title"] = "Shipping label preview";
+}
+
+<h1 class="d-print-none">Shipping label preview</h1>
+
+@if (Model.PaymentStatus != ApexPost.Domain.Enums.TransactionPaymentStatus.Paid)
+{
+    <div class="alert alert-warning" role="alert">
+        This transaction is @Model.PaymentStatus. Do not use these labels.
+    </div>
+}
+
+<p class="d-print-none">
+    <button type="button" class="btn btn-primary" data-print-page>Print labels</button>
+    <a class="btn btn-link" asp-action="Details" asp-route-transactionId="@Model.TransactionId">Back to transaction</a>
+</p>
+
+@foreach (var item in Model.Items)
+{
+    <section class="shipping-label border border-dark border-2 p-3 mb-4" aria-label="Label @item.ShipmentId">
+        <div class="d-flex justify-content-between align-items-start">
+            <strong class="fs-4">ApexPost</strong>
+            <span class="badge bg-dark fs-6">@item.ServiceLevel</span>
+        </div>
+        <p class="font-monospace fs-3 text-center my-3">@item.ShipmentId</p>
+        <dl class="row mb-0">
+            <dt class="col-5">Destination zone</dt>
+            <dd class="col-7">@item.DestinationZone</dd>
+            <dt class="col-5">Item type</dt>
+            <dd class="col-7">@item.Type</dd>
+            <dt class="col-5">Weight</dt>
+            <dd class="col-7">@item.WeightKilograms kg</dd>
+            <dt class="col-5">Dimensions</dt>
+            <dd class="col-7">@item.LengthCm x @item.WidthCm x @item.HeightCm cm</dd>
+            <dt class="col-5">Origin branch</dt>
+            <dd class="col-7">@Model.OriginBranchCode</dd>
+            @if (Model.OccurredAtUtc is { } occurredAtUtc)
+            {
+                <dt class="col-5">Accepted (UTC)</dt>
+                <dd class="col-7">@occurredAtUtc.ToString("yyyy-MM-dd HH:mm")</dd>
+            }
+            <dt class="col-5">Transaction</dt>
+            <dd class="col-7 small">@Model.TransactionId</dd>
+        </dl>
+    </section>
+}

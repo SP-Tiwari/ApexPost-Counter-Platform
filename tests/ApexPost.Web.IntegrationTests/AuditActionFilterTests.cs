@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Encodings.Web;
 using ApexPost.Application.Auditing;
+using ApexPost.Web.Filters;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Logging;
@@ -25,7 +26,7 @@ public sealed class AuditActionFilterTests : IAsyncLifetime
 		_storageDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-Web-Audit-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(_storageDirectory);
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting(
@@ -164,6 +165,63 @@ public sealed class AuditActionFilterTests : IAsyncLifetime
 			StringComparison.Ordinal);
 	}
 
+	[Fact]
+	public async Task UnauditedAction_WritesNoRecord()
+	{
+		var client = _factory.CreateClient();
+
+		var response = await client.GetAsync("/__test/audit/page");
+
+		Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+		Assert.False(File.Exists(AuditFilePath));
+	}
+
+	[Fact]
+	public async Task Redirect_IsRecordedWithTheStatusActuallySent()
+	{
+		var client = _factory.CreateClient(
+			new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+		var response = await client.GetAsync("/__test/audit/redirect");
+
+		Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
+		var record = Assert.Single(await ReadAuditRecordsAsync());
+		Assert.Equal(302, record.StatusCode);
+		Assert.Equal("Succeeded", record.Outcome);
+	}
+
+	[Fact]
+	public async Task ClientError_IsRecordedAsRejected()
+	{
+		var client = _factory.CreateClient();
+
+		var response = await client.GetAsync("/__test/audit/conflict");
+
+		Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+		var record = Assert.Single(await ReadAuditRecordsAsync());
+		Assert.Equal(409, record.StatusCode);
+		Assert.Equal("Rejected", record.Outcome);
+	}
+
+	[Fact]
+	public async Task AddAuditValue_KeepsOnlyAllowListedKeys()
+	{
+		var client = _factory.CreateClient();
+
+		var response = await client.GetAsync("/__test/audit/add-value");
+
+		Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+		var record = Assert.Single(await ReadAuditRecordsAsync());
+		Assert.Equal(
+			"8d1f4c1e-0000-4000-8000-000000000001",
+			record.RouteValues["transactionId"]);
+		Assert.False(record.RouteValues.ContainsKey("documentNumber"));
+		Assert.DoesNotContain(
+			"P1234567",
+			await File.ReadAllTextAsync(AuditFilePath),
+			StringComparison.Ordinal);
+	}
+
 	private async Task<AuditRecord[]> ReadAuditRecordsAsync()
 	{
 		var lines = await File.ReadAllLinesAsync(AuditFilePath);
@@ -176,20 +234,24 @@ public sealed class AuditActionFilterTests : IAsyncLifetime
 	}
 }
 
+// Audited probes, plus one unaudited action to show the filter is opt-in.
 [ApiController]
 [Route("__test/audit")]
 public sealed class AuditProbeController : ControllerBase
 {
 	[AllowAnonymous]
 	[HttpGet("anonymous")]
+	[Audited]
 	public IActionResult Anonymous() => Ok();
 
 	[Authorize]
 	[HttpGet("authenticated")]
+	[Audited]
 	public IActionResult Authenticated() => Ok();
 
 	[AllowAnonymous]
 	[HttpGet("route/{id}/{apiKey}/{branchCode}/{token}")]
+	[Audited]
 	public IActionResult RouteValues(
 		string id,
 		string apiKey,
@@ -198,8 +260,42 @@ public sealed class AuditProbeController : ControllerBase
 
 	[AllowAnonymous]
 	[HttpGet("failure")]
+	[Audited]
 	public IActionResult Failure() =>
 		throw new InvalidOperationException("private action failure");
+
+	[AllowAnonymous]
+	[HttpGet("redirect")]
+	[Audited]
+	public IActionResult RedirectAway() => Redirect("/elsewhere");
+
+	[AllowAnonymous]
+	[HttpGet("conflict")]
+	[Audited]
+	public IActionResult Rejected() => Conflict();
+
+	// Adds a form-style identifier, as the sale action does, and tries a
+	// key that is not allow-listed.
+	[AllowAnonymous]
+	[HttpGet("add-value")]
+	[Audited]
+	public IActionResult AddValue()
+	{
+		AuditActionFilter.AddAuditValue(
+			HttpContext, "transactionId", "8d1f4c1e-0000-4000-8000-000000000001");
+		AuditActionFilter.AddAuditValue(
+			HttpContext, "documentNumber", "P1234567");
+		return Ok();
+	}
+
+	[AllowAnonymous]
+	[HttpGet("page")]
+	public IActionResult PageView()
+	{
+		// Outside an audited action this is ignored.
+		AuditActionFilter.AddAuditValue(HttpContext, "transactionId", "ignored");
+		return Ok();
+	}
 }
 
 public sealed class AuditTestAuthenticationHandler(

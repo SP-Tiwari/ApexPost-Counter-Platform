@@ -1,17 +1,21 @@
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using ApexPost.Web.Security;
 using Microsoft.Extensions.Configuration;
 
 namespace ApexPost.Web.Middleware;
 
+// Protects partner endpoints: those carrying [RequireApiKey] endpoint metadata
+// (the primary mechanism) and, for compatibility, any path under a configured
+// ApiSecurity:ProtectedPathPrefixes entry. Runs after routing so the selected
+// endpoint's metadata is available.
 public sealed class ApiKeyAndIpRestrictionMiddleware
 {
 	private const string ApiKeyHeaderName = "X-API-Key";
 	private readonly RequestDelegate _next;
 	private readonly PathString[] _protectedPathPrefixes;
 	private readonly byte[]? _expectedApiKeyHash;
-	private readonly HashSet<IPAddress> _allowedIpAddresses;
+	private readonly IpAllowlist _allowedIpAddresses;
 
 	public ApiKeyAndIpRestrictionMiddleware(
 		RequestDelegate next,
@@ -25,14 +29,19 @@ public sealed class ApiKeyAndIpRestrictionMiddleware
 			? null
 			: SHA256.HashData(Encoding.UTF8.GetBytes(expectedApiKey));
 
-		_allowedIpAddresses = ReadAllowedIpAddresses(configuration);
+		_allowedIpAddresses = IpAllowlist.FromConfiguration(
+			configuration, "ApiSecurity:AllowedIpAddresses");
 	}
 
 	public async Task InvokeAsync(HttpContext context)
 	{
-		if (!_protectedPathPrefixes.Any(prefix =>
-			context.Request.Path.StartsWithSegments(
-				prefix, StringComparison.OrdinalIgnoreCase)))
+		var requiresApiKey =
+			context.GetEndpoint()?.Metadata.GetMetadata<RequireApiKeyAttribute>()
+				is not null ||
+			_protectedPathPrefixes.Any(prefix =>
+				context.Request.Path.StartsWithSegments(
+					prefix, StringComparison.OrdinalIgnoreCase));
+		if (!requiresApiKey)
 		{
 			await _next(context);
 			return;
@@ -45,9 +54,8 @@ public sealed class ApiKeyAndIpRestrictionMiddleware
 			return;
 		}
 
-		if (_allowedIpAddresses.Count > 0 &&
-			(context.Connection.RemoteIpAddress is not { } remoteAddress ||
-				!_allowedIpAddresses.Contains(NormalizeAddress(remoteAddress))))
+		if (_allowedIpAddresses.IsEnabled &&
+			!_allowedIpAddresses.Allows(context.Connection.RemoteIpAddress))
 		{
 			context.Response.StatusCode = StatusCodes.Status403Forbidden;
 			return;
@@ -95,31 +103,6 @@ public sealed class ApiKeyAndIpRestrictionMiddleware
 			return new PathString(normalizedPrefix);
 		}).ToArray();
 	}
-
-	private static HashSet<IPAddress> ReadAllowedIpAddresses(
-		IConfiguration configuration)
-	{
-		var configuredAddresses = configuration
-			.GetSection("ApiSecurity:AllowedIpAddresses")
-			.Get<string[]>() ?? [];
-		var addresses = new HashSet<IPAddress>();
-
-		foreach (var configuredAddress in configuredAddresses)
-		{
-			if (!IPAddress.TryParse(configuredAddress, out var address))
-			{
-				throw new InvalidOperationException(
-					"API security allowed IP addresses must be valid IP address values.");
-			}
-
-			addresses.Add(NormalizeAddress(address));
-		}
-
-		return addresses;
-	}
-
-	private static IPAddress NormalizeAddress(IPAddress address) =>
-		address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 
 	private static bool HasValidApiKey(
 		HttpRequest request,

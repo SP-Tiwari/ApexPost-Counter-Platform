@@ -1,4 +1,5 @@
 using ApexPost.Domain.Reporting;
+using ApexPost.Domain.Specifications;
 
 namespace ApexPost.Application.Services;
 
@@ -40,10 +41,11 @@ public sealed class DailyBranchSalesReportApplicationService
 		}
 
 		var branchCode = matches[0].HomeBranchCode;
+		var paidAtBranchOnDate = new PaidTransactionSpecification()
+			.And(new TransactionAtBranchSpecification(branchCode))
+			.And(new TransactionOnBusinessDateSpecification(businessDate));
 		var entries = snapshot.TransactionBaskets
-			.Where(basket =>
-				basket.BranchCode == branchCode &&
-				basket.PaymentStatus == TransactionPaymentStatus.Paid)
+			.Matching(paidAtBranchOnDate)
 			.Select(basket => new DailySalesReportEntry(
 				branchCode,
 				businessDate,

@@ -1,10 +1,14 @@
+using ApexPost.Application.Caching;
+
 namespace ApexPost.Application.Services;
 
 /// <summary>
 /// Administrative master-data use cases.  The Web layer deliberately supplies only
 /// the acting staff ID; authorization is rechecked against persisted staff data.
 /// </summary>
-public sealed class AdministrationApplicationService(IApexPostRepository repository)
+public sealed class AdministrationApplicationService(
+	IApexPostRepository repository,
+	ReferenceDataCache? referenceData = null)
 {
 	private readonly IApexPostRepository _repository = repository ??
 		throw new ArgumentNullException(nameof(repository));
@@ -71,10 +75,11 @@ public sealed class AdministrationApplicationService(IApexPostRepository reposit
 			return snapshot;
 		}, cancellationToken);
 
-	public Task AddProductAsync(string administratorId, string sku, string name,
+	public async Task AddProductAsync(string administratorId, string sku, string name,
 		ProductCategory category, decimal unitPrice, string currency, TaxCategory taxCategory,
-		CancellationToken cancellationToken = default) =>
-		_repository.UpdateAsync(snapshot =>
+		CancellationToken cancellationToken = default)
+	{
+		await _repository.UpdateAsync(snapshot =>
 		{
 			EnsureAdministrator(snapshot, administratorId);
 			var productSku = new Sku(sku);
@@ -82,7 +87,11 @@ public sealed class AdministrationApplicationService(IApexPostRepository reposit
 			var product = new Product(productSku, name, category,
 				new Money(unitPrice, currency), taxCategory);
 			return Copy(snapshot, products: snapshot.Products.Append(product));
-		}, cancellationToken);
+		}, cancellationToken).ConfigureAwait(false);
+
+		// Only after a successful save, so a failed add leaves the cache valid.
+		referenceData?.Invalidate();
+	}
 
 	private static void EnsureAdministrator(ApexPostSnapshot snapshot, string staffId)
 	{
