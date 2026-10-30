@@ -1,5 +1,5 @@
 using ApexPost.Domain.Reporting;
-using NSubstitute;
+using ApexPost.Application.Tests.TestDoubles;
 
 namespace ApexPost.Application.Tests.Services;
 
@@ -63,14 +63,13 @@ public sealed class LowStockReportApplicationServiceTests
 	[Fact]
 	public async Task GetReportAsync_MissingStaffIdIsDenied()
 	{
-		var repository = Substitute.For<IApexPostRepository>();
+		var repository = new FakeApexPostRepository();
 		var service = new LowStockReportApplicationService(repository, 2);
 
 		await Assert.ThrowsAsync<UnauthorizedAccessException>(
 			() => service.GetReportAsync(" "));
 
-		await repository.DidNotReceive()
-			.LoadAsync(Arg.Any<CancellationToken>());
+		Assert.Equal(0, repository.LoadCount);
 	}
 
 	[Fact]
@@ -86,7 +85,7 @@ public sealed class LowStockReportApplicationServiceTests
 	[Fact]
 	public void Constructor_NegativeThresholdIsRejected()
 	{
-		var repository = Substitute.For<IApexPostRepository>();
+		var repository = new FakeApexPostRepository();
 
 		Assert.Throws<ArgumentOutOfRangeException>(
 			() => new LowStockReportApplicationService(repository, -1));
@@ -98,22 +97,17 @@ public sealed class LowStockReportApplicationServiceTests
 
 	private static IApexPostRepository CreateRepository(
 		Staff staff,
-		IEnumerable<BranchStock> stocks)
-	{
-		var repository = Substitute.For<IApexPostRepository>();
-		repository.LoadAsync(Arg.Any<CancellationToken>())
-			.Returns(new ApexPostSnapshot(
-				[],
-				[staff],
-				[],
-				stocks,
-				[],
-				[],
-				[],
-				[],
-				[]));
-		return repository;
-	}
+		IEnumerable<BranchStock> stocks) =>
+		new FakeApexPostRepository(new ApexPostSnapshot(
+			[],
+			[staff],
+			[],
+			stocks,
+			[],
+			[],
+			[],
+			[],
+			[]));
 
 	private static Staff CreateManager() =>
 		CreateStaff(ManagerId, StaffRole.BranchManager, HomeBranch);

@@ -18,7 +18,7 @@ public sealed class CorrelationIdMiddlewareTests : IAsyncLifetime
 			Path.GetTempPath(), $"ApexPost-Correlation-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(_rootDirectory);
 		_storageDirectory = Path.Combine(_rootDirectory, "domain-data");
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", _storageDirectory);

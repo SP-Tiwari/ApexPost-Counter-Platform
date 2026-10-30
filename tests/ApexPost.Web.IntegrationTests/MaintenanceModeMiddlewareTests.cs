@@ -194,7 +194,7 @@ public sealed class MaintenanceModeMiddlewareTests : IAsyncLifetime
 
 		Directory.CreateDirectory(instanceDirectory);
 
-		return new WebApplicationFactory<Program>()
+		return new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseEnvironment(Environments.Production);

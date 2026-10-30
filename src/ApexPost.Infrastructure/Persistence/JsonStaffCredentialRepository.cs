@@ -4,10 +4,12 @@ using ApexPost.Application.Security;
 
 namespace ApexPost.Infrastructure.Persistence;
 
-public sealed class JsonStaffCredentialRepository : IStaffCredentialRepository
+public sealed class JsonStaffCredentialRepository
+	: IStaffCredentialRepository, IStaffCredentialProvisioning, IDisposable
 {
 	private const int CurrentSchemaVersion = 1;
 	private readonly string _filePath;
+	private readonly SemaphoreSlim _writeLock = new(1, 1);
 	private readonly JsonSerializerOptions _serializerOptions = new()
 	{
 		PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -25,6 +27,8 @@ public sealed class JsonStaffCredentialRepository : IStaffCredentialRepository
 		_filePath = Path.GetFullPath(filePath);
 	}
 
+	public void Dispose() => _writeLock.Dispose();
+
 	public async Task<StaffCredential?> FindAsync(
 		string staffId,
 		CancellationToken cancellationToken = default)
@@ -32,6 +36,92 @@ public sealed class JsonStaffCredentialRepository : IStaffCredentialRepository
 		if (string.IsNullOrWhiteSpace(staffId))
 			throw new ArgumentException("Staff ID is required.", nameof(staffId));
 
+		var credentials = await LoadAllAsync(cancellationToken)
+			.ConfigureAwait(false);
+		return credentials.SingleOrDefault(credential =>
+			string.Equals(
+				credential.StaffId, staffId.Trim(), StringComparison.Ordinal));
+	}
+
+	public async Task<IReadOnlySet<string>> GetStaffIdsAsync(
+		CancellationToken cancellationToken = default) =>
+		File.Exists(_filePath)
+			? (await LoadAllAsync(cancellationToken).ConfigureAwait(false))
+				.Select(credential => credential.StaffId)
+				.ToHashSet(StringComparer.Ordinal)
+			: new HashSet<string>(StringComparer.Ordinal);
+
+	// Creates the credential file when it does not exist. The document is
+	// written to a temporary file and moved into place, so readers never see
+	// a partial file.
+	public async Task<int> AddMissingAsync(
+		IReadOnlyCollection<StaffCredential> credentials,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(credentials);
+		foreach (var credential in credentials)
+			StaffPasswordHashVerifier.Validate(credential);
+
+		await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			var existing = File.Exists(_filePath)
+				? await LoadAllAsync(cancellationToken).ConfigureAwait(false)
+				: [];
+			var knownIds = existing
+				.Select(credential => credential.StaffId)
+				.ToHashSet(StringComparer.Ordinal);
+			var added = credentials
+				.Where(credential => knownIds.Add(credential.StaffId))
+				.ToArray();
+			if (added.Length == 0)
+				return 0;
+
+			var document = new PersistedCredentialDocument
+			{
+				SchemaVersion = CurrentSchemaVersion,
+				Credentials = existing.Concat(added).Select(ToPersisted).ToList()
+			};
+			var directory = Path.GetDirectoryName(_filePath)
+				?? throw new InvalidOperationException(
+					"Credential file path must include a directory.");
+			Directory.CreateDirectory(directory);
+			var temporaryFile = Path.Combine(
+				directory, $".{Path.GetFileName(_filePath)}.{Guid.NewGuid():N}.tmp");
+			try
+			{
+				await using (var stream = new FileStream(
+					temporaryFile,
+					FileMode.CreateNew,
+					FileAccess.Write,
+					FileShare.None,
+					4096,
+					FileOptions.Asynchronous))
+				{
+					await JsonSerializer.SerializeAsync(
+						stream, document, _serializerOptions, cancellationToken)
+						.ConfigureAwait(false);
+				}
+
+				File.Move(temporaryFile, _filePath, overwrite: true);
+			}
+			finally
+			{
+				if (File.Exists(temporaryFile))
+					File.Delete(temporaryFile);
+			}
+
+			return added.Length;
+		}
+		finally
+		{
+			_writeLock.Release();
+		}
+	}
+
+	private async Task<StaffCredential[]> LoadAllAsync(
+		CancellationToken cancellationToken)
+	{
 		await using var stream = new FileStream(
 			_filePath,
 			FileMode.Open,
@@ -90,10 +180,19 @@ public sealed class JsonStaffCredentialRepository : IStaffCredentialRepository
 			StaffPasswordHashVerifier.Validate(credential);
 		}
 
-		return credentials.SingleOrDefault(credential =>
-			string.Equals(
-				credential.StaffId, staffId.Trim(), StringComparison.Ordinal));
+		return credentials;
 	}
+
+	private static PersistedStaffCredential ToPersisted(
+		StaffCredential credential) =>
+		new()
+		{
+			StaffId = credential.StaffId,
+			HashVersion = credential.Version,
+			Iterations = credential.Iterations,
+			Salt = credential.Salt,
+			PasswordHash = credential.PasswordHash
+		};
 
 	private static StaffCredential ToCredential(
 		PersistedStaffCredential credential) =>

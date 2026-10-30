@@ -1,3 +1,6 @@
+using ApexPost.Application.Events;
+using ApexPost.Domain.Events;
+
 namespace ApexPost.Application.Services;
 
 public sealed record StockAdjustmentCatalog(
@@ -7,11 +10,24 @@ public sealed record StockAdjustmentCatalog(
 public sealed class StockAdjustmentApplicationService
 {
 	private readonly IApexPostRepository _repository;
+	private readonly DomainEventPublisher? _events;
+	private readonly int? _lowStockThreshold;
+	private readonly TimeProvider _timeProvider;
 
-	public StockAdjustmentApplicationService(IApexPostRepository repository)
+	public StockAdjustmentApplicationService(
+		IApexPostRepository repository,
+		DomainEventPublisher? events = null,
+		int? lowStockThreshold = null,
+		TimeProvider? timeProvider = null)
 	{
 		ArgumentNullException.ThrowIfNull(repository);
+		if (lowStockThreshold < 0)
+			throw new ArgumentOutOfRangeException(
+				nameof(lowStockThreshold), "Low-stock threshold cannot be negative.");
 		_repository = repository;
+		_events = events;
+		_lowStockThreshold = lowStockThreshold;
+		_timeProvider = timeProvider ?? TimeProvider.System;
 	}
 
 	public async Task<StockAdjustmentCatalog> GetCatalogAsync(
@@ -29,12 +45,15 @@ public sealed class StockAdjustmentApplicationService
 			branch, Array.AsReadOnly(branchStocks));
 	}
 
-	public Task AdjustStockAsync(
+	public async Task AdjustStockAsync(
 		string staffId,
 		string productSku,
 		int quantityChange,
-		CancellationToken cancellationToken = default) =>
-		_repository.UpdateAsync(snapshot =>
+		CancellationToken cancellationToken = default)
+	{
+		// Collected inside the update; published only once it has been saved.
+		IReadOnlyList<StockLowEvent> committedEvents = [];
+		await _repository.UpdateAsync(snapshot =>
 		{
 			var staff = FindActiveBranchManager(snapshot, staffId);
 			_ = FindBranch(snapshot, staff.HomeBranchCode);
@@ -57,12 +76,27 @@ public sealed class StockAdjustmentApplicationService
 				$"Stock for product '{sku}' at branch '{staff.HomeBranchCode}'");
 
 			if (quantityChange > 0)
+			{
 				stock.AddStock(quantityChange);
+			}
 			else
+			{
+				var quantitiesBefore = LowStockEvents.CaptureQuantities(
+					[stock], stock.BranchCode, [stock.ProductSku]);
 				stock.RemoveStock(-quantityChange);
+				committedEvents = LowStockEvents.Evaluate(
+					[stock],
+					stock.BranchCode,
+					quantitiesBefore,
+					_lowStockThreshold,
+					_timeProvider.GetUtcNow());
+			}
 
 			return snapshot;
-		}, cancellationToken);
+		}, cancellationToken).ConfigureAwait(false);
+
+		_events?.Publish(committedEvents);
+	}
 
 	private static Staff FindActiveBranchManager(
 		ApexPostSnapshot snapshot,

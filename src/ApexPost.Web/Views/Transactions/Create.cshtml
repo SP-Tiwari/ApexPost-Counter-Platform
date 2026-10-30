@@ -13,7 +13,8 @@
         Your assigned branch is unavailable for transaction processing.
     </p>
 }
-@if (Model.Products.Count == 0 && Model.ShippingRates.Count == 0)
+@if (Model.Products.Count == 0 && Model.ShippingRates.Count == 0 &&
+     Model.MoneyOrders is null)
 {
     <p class="alert alert-warning" role="status">
         No eligible goods or configured shipping rates are available.
@@ -21,7 +22,8 @@
     </p>
 }
 @if (!Model.CanSubmit && Model.Branch is not null &&
-     (Model.Products.Count > 0 || Model.ShippingRates.Count > 0))
+     (Model.Products.Count > 0 || Model.ShippingRates.Count > 0 ||
+      Model.MoneyOrders is not null))
 {
     <p class="alert alert-warning" role="status">
         Configure transaction tax rates before processing transactions.
@@ -37,23 +39,77 @@
     }
 
     <fieldset class="mb-4">
-        <legend>Goods (optional)</legend>
+        <legend>Counter and payment</legend>
+        @if (Model.CounterTerminals.Count == 0)
+        {
+            <p class="alert alert-warning" role="status">
+                Your branch has no active counter terminal.
+            </p>
+        }
+        @if (Model.PaymentMethods.Count == 0)
+        {
+            <p class="alert alert-warning" role="status">
+                Configure payment methods before processing transactions.
+            </p>
+        }
         <div class="mb-3">
-            <label asp-for="GoodsSku" class="form-label">Product</label>
-            <select asp-for="GoodsSku" class="form-select">
-                <option value="">No goods</option>
-                @foreach (var product in Model.Products)
+            <label asp-for="CounterTerminalId" class="form-label">Counter terminal</label>
+            <select asp-for="CounterTerminalId" class="form-select">
+                <option value="">Select a counter</option>
+                @foreach (var terminal in Model.CounterTerminals)
                 {
-                    <option value="@product.Sku.Value">
-                        @product.Name (@product.UnitPrice.Amount @product.UnitPrice.Currency)
-                    </option>
+                    <option value="@terminal.Id">@terminal.Name (@terminal.Id)</option>
                 }
             </select>
+            <span asp-validation-for="CounterTerminalId" class="text-danger"></span>
         </div>
         <div class="mb-3">
-            <label asp-for="GoodsQuantity" class="form-label">Quantity</label>
-            <input asp-for="GoodsQuantity" type="number" min="1" class="form-control" />
-            <span asp-validation-for="GoodsQuantity" class="text-danger"></span>
+            <label asp-for="PaymentMethod" class="form-label">Payment method</label>
+            <select asp-for="PaymentMethod" class="form-select">
+                <option value="">Select a payment method</option>
+                @foreach (var method in Model.PaymentMethods)
+                {
+                    <option value="@method">@method</option>
+                }
+            </select>
+            <span asp-validation-for="PaymentMethod" class="text-danger"></span>
+        </div>
+    </fieldset>
+
+    <fieldset class="mb-4">
+        <legend>Goods (optional)</legend>
+        <div id="goods-lines">
+            @for (var row = 0; row < Model.GoodsSku.Count; row++)
+            {
+                var selectedSku = Model.GoodsSku[row];
+                var quantity = row < Model.GoodsQuantity.Count ? Model.GoodsQuantity[row] : null;
+                <div class="row goods-line">
+                    <div class="col-md-8 mb-3">
+                        <label class="form-label" for="goods-sku-@row">Product</label>
+                        <select id="goods-sku-@row" name="GoodsSku" class="form-select">
+                            <option value="">No product</option>
+                            @foreach (var product in Model.Products)
+                            {
+                                <option value="@product.Sku.Value" selected="@(product.Sku.Value == selectedSku)">
+                                    @product.Name (@product.UnitPrice.Amount @product.UnitPrice.Currency)
+                                </option>
+                            }
+                        </select>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label" for="goods-quantity-@row">Quantity</label>
+                        <input id="goods-quantity-@row" name="GoodsQuantity" type="number" min="1"
+                               class="form-control" value="@quantity" />
+                    </div>
+                </div>
+            }
+        </div>
+        <span asp-validation-for="GoodsSku" class="text-danger"></span>
+        <span asp-validation-for="GoodsQuantity" class="text-danger"></span>
+        <div>
+            <button type="button" id="add-goods-line" class="btn btn-outline-secondary" hidden>
+                Add another product line
+            </button>
         </div>
     </fieldset>
 
@@ -140,7 +196,61 @@
         }
     </fieldset>
 
+    @if (Model.MoneyOrders is { } moneyOrderTerms)
+    {
+        <fieldset class="mb-4">
+            <legend>Money order (optional)</legend>
+            <div class="form-check mb-3">
+                <input asp-for="IncludeMoneyOrder" class="form-check-input" />
+                <label asp-for="IncludeMoneyOrder" class="form-check-label">
+                    Include a money order
+                </label>
+            </div>
+            <p>
+                Fee: @moneyOrderTerms.Fee.Amount @moneyOrderTerms.Fee.Currency.
+                Amounts above @moneyOrderTerms.HighValueThreshold.Amount
+                @moneyOrderTerms.HighValueThreshold.Currency require a successful
+                identity verification, which the system performs.
+            </p>
+            <div class="mb-3">
+                <label asp-for="MoneyOrderAmount" class="form-label">
+                    Amount (@moneyOrderTerms.HighValueThreshold.Currency)
+                </label>
+                <input asp-for="MoneyOrderAmount" type="number" min="0.01" step="0.01" class="form-control" />
+                <span asp-validation-for="MoneyOrderAmount" class="text-danger"></span>
+            </div>
+            <div class="mb-3">
+                <label asp-for="MoneyOrderSender" class="form-label">Sender</label>
+                <input asp-for="MoneyOrderSender" class="form-control" />
+                <span asp-validation-for="MoneyOrderSender" class="text-danger"></span>
+            </div>
+            <div class="mb-3">
+                <label asp-for="MoneyOrderRecipient" class="form-label">Recipient</label>
+                <input asp-for="MoneyOrderRecipient" class="form-control" />
+                <span asp-validation-for="MoneyOrderRecipient" class="text-danger"></span>
+            </div>
+            <div class="mb-3">
+                <label asp-for="MoneyOrderDocumentType" class="form-label">
+                    Identity document type
+                </label>
+                <input asp-for="MoneyOrderDocumentType" class="form-control" />
+                <span asp-validation-for="MoneyOrderDocumentType" class="text-danger"></span>
+            </div>
+            <div class="mb-3">
+                <label asp-for="MoneyOrderDocumentIdentifier" class="form-label">
+                    Identity document number
+                </label>
+                <input asp-for="MoneyOrderDocumentIdentifier" class="form-control" autocomplete="off" value="" />
+                <div class="form-text">Only the last four characters are stored.</div>
+            </div>
+        </fieldset>
+    }
+
     <button type="submit" class="btn btn-primary" disabled="@(!Model.CanSubmit)">
         Process transaction
     </button>
 </form>
+
+@section Scripts {
+    <script src="~/js/transaction-create.js" asp-append-version="true"></script>
+}

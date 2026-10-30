@@ -1,9 +1,13 @@
+using ApexPost.Web.Filters;
+using Microsoft.AspNetCore.Mvc.Filters;
+
 namespace ApexPost.Web.Controllers;
 
-[Authorize(Roles = nameof(StaffRole.BranchManager))]
+[Authorize(Policy = ApexPostPolicies.BranchManagerOnly)]
 [Route("[controller]/[action]")]
 public sealed class StockController(
-	StockAdjustmentApplicationService stockAdjustments) : Controller
+	StockAdjustmentApplicationService stockAdjustments)
+	: Controller, IInvalidModelStateHandler
 {
 	[HttpGet]
 	public async Task<IActionResult> Adjust(
@@ -31,6 +35,7 @@ public sealed class StockController(
 
 	[HttpPost]
 	[ValidateAntiForgeryToken]
+	[Audited]
 	public async Task<IActionResult> Adjust(
 		StockAdjustmentViewModel model,
 		CancellationToken cancellationToken)
@@ -100,6 +105,16 @@ public sealed class StockController(
 				cancellationToken);
 		}
 	}
+
+	async Task<IActionResult?> IInvalidModelStateHandler.HandleInvalidModelStateAsync(
+		ActionExecutingContext context) =>
+		context.ActionArguments.Values.OfType<StockAdjustmentViewModel>()
+			.FirstOrDefault() is { } model
+			? await RenderFormAsync(
+				model,
+				StatusCodes.Status400BadRequest,
+				context.HttpContext.RequestAborted)
+			: null;
 
 	private async Task<IActionResult> RenderFormAsync(
 		StockAdjustmentViewModel model,

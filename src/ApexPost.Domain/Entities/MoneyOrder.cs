@@ -1,8 +1,10 @@
+using ApexPost.Domain;
 
 namespace ApexPost.Domain.Entities;
 
 public sealed class MoneyOrder
 {
+	public Guid Id { get; }
 	public Money Amount { get; }
 	public string Sender { get; }
 	public string Recipient { get; }
@@ -10,16 +12,32 @@ public sealed class MoneyOrder
 	public IdentityVerification? IdentityVerification { get; }
 	public BranchCode? ProcessingBranchCode { get; }
 
+	// C# 14 field keyword: the locked getter needs no separate backing field.
+	public MoneyOrderStatus Status
+	{
+		get
+		{
+			lock (DomainMutationLock.Gate)
+				return field;
+		}
+		private set;
+	} = MoneyOrderStatus.Issued;
+
 	public MoneyOrder(
 		Money amount,
 		string sender,
 		string recipient,
 		Money fee,
 		IdentityVerification? identityVerification = null,
-		BranchCode? processingBranchCode = null)
+		BranchCode? processingBranchCode = null,
+		Guid? id = null)
 	{
 		ArgumentNullException.ThrowIfNull(amount);
 		ArgumentNullException.ThrowIfNull(fee);
+
+		if (id == Guid.Empty)
+			throw new ArgumentException(
+				"Money order ID cannot be empty.", nameof(id));
 
 		if (amount.Amount <= 0)
 			throw new ArgumentOutOfRangeException(
@@ -38,11 +56,24 @@ public sealed class MoneyOrder
 				"Money order amount and fee must use the same currency.",
 				nameof(fee));
 
+		Id = id ?? Guid.NewGuid();
 		Amount = amount;
 		Sender = sender.Trim();
 		Recipient = recipient.Trim();
 		Fee = fee;
 		IdentityVerification = identityVerification;
 		ProcessingBranchCode = processingBranchCode;
+	}
+
+	public void Cancel()
+	{
+		lock (DomainMutationLock.Gate)
+		{
+			if (Status != MoneyOrderStatus.Issued)
+				throw new InvalidOperationException(
+					"Only an issued money order can be cancelled.");
+
+			Status = MoneyOrderStatus.Cancelled;
+		}
 	}
 }

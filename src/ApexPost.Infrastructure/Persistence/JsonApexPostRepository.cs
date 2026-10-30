@@ -11,7 +11,10 @@ namespace ApexPost.Infrastructure.Persistence;
 public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 {
 	private const int LegacySchemaVersion = 1;
-	private const int CurrentSchemaVersion = 4;
+	private const int TransactionTimeSchemaVersion = 5;
+	private const int MoneyOrderBasketSchemaVersion = 6;
+	private const int SaleDetailsSchemaVersion = 7;
+	private const int CurrentSchemaVersion = SaleDetailsSchemaVersion;
 	private readonly string _filePath;
 	private readonly SemaphoreSlim _fileLock = new(1, 1);
 	private readonly JsonSerializerOptions _serializerOptions = new()
@@ -136,6 +139,24 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 
 		var isLegacySchema = document.SchemaVersion == LegacySchemaVersion;
 		ValidateDocument(document, isLegacySchema);
+		// Versions before 5 never recorded a transaction time. Their baskets
+		// migrate with no time rather than an invented one.
+		if (document.SchemaVersion < TransactionTimeSchemaVersion &&
+			document.TransactionBaskets.Any(basket =>
+				basket.OccurredAtUtc is not null))
+		{
+			throw new InvalidDataException(
+				$"Transaction times are not supported before schema version {TransactionTimeSchemaVersion}.");
+		}
+		// Older transactions migrate with no counter, clerk, or payment method.
+		if (document.SchemaVersion < SaleDetailsSchemaVersion &&
+			document.TransactionBaskets.Any(basket =>
+				basket.SaleDetails is not null))
+		{
+			throw new InvalidDataException(
+				$"Transaction sale details are not supported before schema version {SaleDetailsSchemaVersion}.");
+		}
+		ValidateMoneyOrderReferences(document);
 		var snapshot = ToSnapshot(document);
 		if (document.SchemaVersion != CurrentSchemaVersion)
 			await SaveUnderLockAsync(snapshot, cancellationToken)
@@ -252,6 +273,8 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 			}).ToList(),
 			MoneyOrders = snapshot.MoneyOrders.Select(order => new PersistedMoneyOrder
 			{
+				Id = order.Id,
+				Status = order.Status,
 				Amount = ToMoney(order.Amount),
 				Sender = order.Sender,
 				Recipient = order.Recipient,
@@ -297,9 +320,19 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				ProductSku = lineItem.ProductSku?.Value,
 				ShippingItem = lineItem.ShippingItem is null
 					? null
-					: ToPersistedShippingItem(lineItem.ShippingItem)
+					: ToPersistedShippingItem(lineItem.ShippingItem),
+				MoneyOrderId = lineItem.MoneyOrder?.Id
 			}).ToList(),
 			BranchCode = basket.BranchCode?.Value,
+			OccurredAtUtc = basket.OccurredAtUtc,
+			SaleDetails = basket.SaleDetails is null
+				? null
+				: new PersistedSaleDetails
+				{
+					CounterTerminalId = basket.SaleDetails.CounterTerminalId,
+					ClerkStaffId = basket.SaleDetails.ClerkStaffId,
+					PaymentMethod = basket.SaleDetails.PaymentMethod
+				},
 			PaymentStatus = basket.PaymentStatus,
 			Notifications = basket.Notifications.Select(notification => notification switch
 			{
@@ -322,6 +355,10 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 	{
 		try
 		{
+			// Money orders are restored first so basket lines share the same
+			// instances; a void or refund then cancels the record in place.
+			var moneyOrders = document.MoneyOrders.Select(ToMoneyOrder).ToArray();
+			var moneyOrdersById = moneyOrders.ToDictionary(order => order.Id);
 			return new ApexPostSnapshot(
 				document.Branches.Select(ToBranch),
 				document.Staff.Select(ToStaff),
@@ -336,20 +373,11 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 					rate.ServiceLevel,
 					ToMoney(rate.BasePrice),
 					ToMoney(rate.PerKilogramCharge))),
-				document.MoneyOrders.Select(order => new MoneyOrder(
-					ToMoney(order.Amount),
-					order.Sender,
-					order.Recipient,
-					ToMoney(order.Fee),
-					order.IdentityVerification is null
-						? null
-						: ToIdentityVerification(order.IdentityVerification),
-					order.ProcessingBranchCode is null
-						? null
-						: new BranchCode(order.ProcessingBranchCode))),
+				moneyOrders,
 				document.IdentityVerifications.Select(verification =>
 					ToIdentityVerification(verification)),
-				document.TransactionBaskets.Select(ToBasket));
+				document.TransactionBaskets.Select(basket =>
+					ToBasket(basket, moneyOrdersById)));
 		}
 
 		catch (Exception exception) when (
@@ -446,6 +474,50 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 		}
 	}
 
+	private static void ValidateMoneyOrderReferences(PersistedApexPost document)
+	{
+		var referencedIds = document.TransactionBaskets
+			.SelectMany(basket => basket.LineItems)
+			.Where(lineItem => lineItem.MoneyOrderId is not null)
+			.Select(lineItem => lineItem.MoneyOrderId!.Value)
+			.ToArray();
+
+		if (document.SchemaVersion < MoneyOrderBasketSchemaVersion)
+		{
+			if (referencedIds.Length > 0 ||
+				document.MoneyOrders.Any(order =>
+					order.Id is not null || order.Status is not null))
+			{
+				throw new InvalidDataException(
+					$"Money-order IDs, statuses, and basket links are not supported before schema version {MoneyOrderBasketSchemaVersion}.");
+			}
+
+			return;
+		}
+
+		if (document.MoneyOrders.Any(order =>
+				order.Id is null || order.Id == Guid.Empty ||
+				order.Status is null || !Enum.IsDefined(order.Status.Value)))
+		{
+			throw new InvalidDataException(
+				"Persisted money orders require an ID and a valid status.");
+		}
+
+		var moneyOrderIds = document.MoneyOrders
+			.Select(order => order.Id!.Value)
+			.ToHashSet();
+		if (moneyOrderIds.Count != document.MoneyOrders.Count)
+			throw new InvalidDataException(
+				"Persisted money-order IDs must be unique.");
+
+		if (referencedIds.Distinct().Count() != referencedIds.Length ||
+			referencedIds.Any(id => !moneyOrderIds.Contains(id)))
+		{
+			throw new InvalidDataException(
+				"Each money-order basket line must reference one distinct persisted money order.");
+		}
+	}
+
 	private static bool ContainsNull<T>(IEnumerable<T>? values)
 		where T : class =>
 		values is null || values.Any(value => value is null);
@@ -491,7 +563,28 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 			ToMoney(product.UnitPrice),
 			product.TaxCategory);
 
-	private static TransactionBasket ToBasket(PersistedTransactionBasket basket)
+	private static MoneyOrder ToMoneyOrder(PersistedMoneyOrder order)
+	{
+		var moneyOrder = new MoneyOrder(
+			ToMoney(order.Amount),
+			order.Sender,
+			order.Recipient,
+			ToMoney(order.Fee),
+			order.IdentityVerification is null
+				? null
+				: ToIdentityVerification(order.IdentityVerification),
+			order.ProcessingBranchCode is null
+				? null
+				: new BranchCode(order.ProcessingBranchCode),
+			order.Id);
+		if (order.Status == MoneyOrderStatus.Cancelled)
+			moneyOrder.Cancel();
+		return moneyOrder;
+	}
+
+	private static TransactionBasket ToBasket(
+		PersistedTransactionBasket basket,
+		IReadOnlyDictionary<Guid, MoneyOrder> moneyOrdersById)
 	{
 		var taxRates = basket.TaxRates.ToDictionary(
 			rate => rate.Category,
@@ -506,7 +599,10 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 				item.ProductSku is null ? null : new Sku(item.ProductSku),
 				item.ShippingItem is null
 					? null
-					: ToShippingItem(item.ShippingItem)));
+					: ToShippingItem(item.ShippingItem),
+				item.MoneyOrderId is null
+					? null
+					: moneyOrdersById[item.MoneyOrderId.Value]));
 		var notifications = basket.Notifications.Select(notification =>
 			notification.Type switch
 			{
@@ -527,7 +623,14 @@ public sealed class JsonApexPostRepository : IApexPostRepository, IDisposable
 			notifications,
 			basket.BranchCode is null
 				? null
-				: new BranchCode(basket.BranchCode));
+				: new BranchCode(basket.BranchCode),
+			basket.OccurredAtUtc,
+			basket.SaleDetails is null
+				? null
+				: new CounterSaleDetails(
+					basket.SaleDetails.CounterTerminalId,
+					basket.SaleDetails.ClerkStaffId,
+					basket.SaleDetails.PaymentMethod));
 	}
 
 	private static PersistedMoney ToMoney(Money money) =>
@@ -622,6 +725,9 @@ internal sealed class PersistedMoneyOrder
 	public required PersistedMoney Fee { get; set; }
 	public string? ProcessingBranchCode { get; set; }
 	public PersistedIdentityVerification? IdentityVerification { get; set; }
+	// Added in schema version 6; older money orders get a new ID and are Issued.
+	public Guid? Id { get; set; }
+	public MoneyOrderStatus? Status { get; set; }
 }
 
 internal sealed class PersistedIdentityVerification
@@ -641,11 +747,22 @@ internal sealed class PersistedTransactionBasket
 {
 	public Guid? Id { get; set; }
 	public string? BranchCode { get; set; }
+	// Added in schema version 5; absent (null) for older transactions.
+	public DateTimeOffset? OccurredAtUtc { get; set; }
+	// Added in schema version 7; absent (null) for older transactions.
+	public PersistedSaleDetails? SaleDetails { get; set; }
 	public required string Currency { get; set; }
 	public required List<PersistedTaxRate> TaxRates { get; set; }
 	public required List<PersistedLineItem> LineItems { get; set; }
 	public required TransactionPaymentStatus PaymentStatus { get; set; }
 	public required List<PersistedNotification> Notifications { get; set; }
+}
+
+internal sealed class PersistedSaleDetails
+{
+	public required string CounterTerminalId { get; set; }
+	public required string ClerkStaffId { get; set; }
+	public required string PaymentMethod { get; set; }
 }
 
 internal sealed class PersistedTaxRate
@@ -663,6 +780,8 @@ internal sealed class PersistedLineItem
 	public required TaxCategory TaxCategory { get; set; }
 	public required string? ProductSku { get; set; }
 	public PersistedShippingItem? ShippingItem { get; set; }
+	// Added in schema version 6: the money order a MoneyOrder line issued.
+	public Guid? MoneyOrderId { get; set; }
 }
 
 internal sealed class PersistedNotification

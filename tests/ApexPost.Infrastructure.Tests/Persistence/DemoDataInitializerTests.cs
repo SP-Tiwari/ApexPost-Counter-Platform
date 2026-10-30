@@ -65,6 +65,28 @@ public sealed class DemoDataInitializerTests : IAsyncLifetime
 	}
 
 	[Fact]
+	public async Task InitializeAsync_SeededSalesDeductTheirBranchStock()
+	{
+		using var repository = CreateRepository();
+
+		Assert.True(await new DemoDataInitializer(repository).InitializeAsync());
+
+		var snapshot = await repository.LoadAsync();
+		var unitsSold = snapshot.TransactionBaskets
+			.SelectMany(basket => basket.LineItems.Select(line =>
+				(BranchCode: basket.BranchCode!, Sku: line.ProductSku!, line.Quantity)))
+			.GroupBy(sale => (sale.BranchCode, sale.Sku))
+			.ToDictionary(
+				group => group.Key,
+				group => group.Sum(sale => sale.Quantity));
+		Assert.Equal(40, unitsSold.Values.Sum());
+		Assert.All(snapshot.BranchStocks, stock =>
+			Assert.Equal(
+				10 - unitsSold.GetValueOrDefault((stock.BranchCode, stock.ProductSku)),
+				stock.Quantity));
+	}
+
+	[Fact]
 	public async Task InitializeAsync_DoesNotModifyANonEmptySnapshot()
 	{
 		using var repository = CreateRepository();

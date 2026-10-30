@@ -31,6 +31,27 @@ public sealed class TransactionProcessingRule
 				"Staff can process transactions only at their assigned branch.");
 		}
 
+		if (basket.SaleDetails is { } saleDetails)
+		{
+			if (!string.Equals(
+				saleDetails.ClerkStaffId, staff.Id, StringComparison.Ordinal))
+			{
+				throw new InvalidOperationException(
+					"The recorded clerk must be the staff member processing the sale.");
+			}
+
+			if (!branch.CounterTerminals.Any(terminal =>
+				terminal.IsActive &&
+				string.Equals(
+					terminal.Id,
+					saleDetails.CounterTerminalId,
+					StringComparison.Ordinal)))
+			{
+				throw new InvalidOperationException(
+					"Transactions can be processed only at an active counter terminal of the branch.");
+			}
+		}
+
 		new SaleProcessingService().ProcessSale(
 			basket,
 			branch.Code,

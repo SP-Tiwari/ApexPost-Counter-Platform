@@ -1,11 +1,19 @@
 using System.Globalization;
 using ApexPost.Application.Persistence;
 using ApexPost.Application.Auditing;
+using ApexPost.Application.Caching;
+using ApexPost.Application.Courier;
+using ApexPost.Application.Events;
 using ApexPost.Application.Security;
+using ApexPost.Application.Verification;
+using ApexPost.Infrastructure.Courier;
 using ApexPost.Infrastructure.Persistence;
+using ApexPost.Infrastructure.Verification;
 using ApexPost.Web.Authentication;
+using ApexPost.Web.Authorization;
 using ApexPost.Web.Filters;
 using ApexPost.Web.Middleware;
+using ApexPost.Web.Notifications;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using System.Threading.RateLimiting;
 
@@ -63,7 +71,8 @@ builder.Services
 		options.EventsType = typeof(StaffCookieAuthenticationEvents);
 	});
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options => options.AddApexPostPolicies());
+builder.Services.AddScoped<IAuthorizationHandler, SameBranchAuthorizationHandler>();
 
 var parcelTrackingOrigins = builder.Configuration
 	.GetSection("ParcelTracking:AllowedOrigins")
@@ -130,11 +139,74 @@ if (!Path.IsPathRooted(credentialFile))
 		credentialFile);
 }
 
-builder.Services.AddSingleton<IStaffCredentialRepository>(
+builder.Services.AddSingleton(
 	_ => new JsonStaffCredentialRepository(credentialFile));
+builder.Services.AddSingleton<IStaffCredentialRepository>(services =>
+	services.GetRequiredService<JsonStaffCredentialRepository>());
+builder.Services.AddSingleton<IStaffCredentialProvisioning>(services =>
+	services.GetRequiredService<JsonStaffCredentialRepository>());
+builder.Services.AddSingleton<DemoCredentialProvisioner>();
 
-builder.Services.AddScoped<TransactionApplicationService>();
-builder.Services.AddScoped<StockAdjustmentApplicationService>();
+// Demo logins: the password comes from user-secrets (never source control)
+// and is only honoured in Development, so a stray setting cannot create
+// known-password accounts in another environment.
+var demoStaffPassword = builder.Configuration["DemoData:StaffPassword"];
+if (demoStaffPassword is not null)
+{
+	if (string.IsNullOrWhiteSpace(demoStaffPassword))
+		throw new InvalidOperationException(
+			"DemoData:StaffPassword must not be blank when set.");
+	if (!builder.Environment.IsDevelopment())
+		throw new InvalidOperationException(
+			"DemoData:StaffPassword is only supported in the Development environment.");
+}
+
+var referenceDataSeconds = builder.Configuration.GetValue<double>(
+	"Caching:ReferenceDataSeconds", 0d);
+if (!double.IsFinite(referenceDataSeconds) || referenceDataSeconds < 0d)
+{
+	throw new InvalidOperationException(
+		"Caching:ReferenceDataSeconds must be a non-negative number (0 disables caching).");
+}
+var referenceDataLifetime = TimeSpan.FromSeconds(referenceDataSeconds);
+builder.Services.AddSingleton<ReferenceDataCache>(services =>
+	new ReferenceDataCache(
+		services.GetRequiredService<IApexPostRepository>(),
+		services.GetRequiredService<TimeProvider>(),
+		referenceDataLifetime));
+
+var courierTrackingStatus =
+	builder.Configuration["Courier:SimulatedTrackingStatus"];
+if (!string.IsNullOrWhiteSpace(courierTrackingStatus))
+{
+	var courierTimeoutSeconds = builder.Configuration.GetValue<double?>(
+		"Courier:TimeoutSeconds");
+	var courierMaxConcurrentLookups = builder.Configuration.GetValue<int?>(
+		"Courier:MaxConcurrentLookups");
+	var courierLatencyMilliseconds = builder.Configuration.GetValue<double?>(
+		"Courier:SimulatedLatencyMilliseconds") ?? 0d;
+	if (courierTimeoutSeconds is not { } timeoutSeconds ||
+		!double.IsFinite(timeoutSeconds) || timeoutSeconds <= 0d ||
+		courierMaxConcurrentLookups is not > 0 ||
+		!double.IsFinite(courierLatencyMilliseconds) ||
+		courierLatencyMilliseconds < 0d)
+	{
+		throw new InvalidOperationException(
+			"Configure a positive Courier:TimeoutSeconds and Courier:MaxConcurrentLookups (and a non-negative SimulatedLatencyMilliseconds, if set) when Courier:SimulatedTrackingStatus is configured.");
+	}
+
+	var courierTimeout = TimeSpan.FromSeconds(timeoutSeconds);
+	var courierLatency = TimeSpan.FromMilliseconds(courierLatencyMilliseconds);
+	var courierConcurrency = courierMaxConcurrentLookups.Value;
+	builder.Services.AddSingleton<ICourierTrackingService>(services =>
+		new SimulatedCourierTrackingService(
+			courierTrackingStatus,
+			courierConcurrency,
+			courierTimeout,
+			courierLatency,
+			services.GetRequiredService<TimeProvider>()));
+}
+
 builder.Services.AddScoped<AdministrationApplicationService>();
 builder.Services.AddScoped<StaffAuthenticationService>();
 builder.Services.AddScoped<StaffCookieAuthenticationEvents>();
@@ -160,10 +232,48 @@ if (lowStockThresholdValue is not null)
 	lowStockThreshold = configuredLowStockThreshold;
 }
 
+// Domain events are published after each change is saved; the simulated
+// sender turns them into notification log entries.
+builder.Services.AddSingleton<DomainEventPublisher>(services =>
+{
+	var logger = services.GetRequiredService<ILogger<DomainEventPublisher>>();
+	return new DomainEventPublisher((exception, domainEvent) =>
+		logger.LogError(
+			exception,
+			"A notification subscriber failed while handling {DomainEventType}.",
+			domainEvent.GetType().Name));
+});
+builder.Services.AddSingleton<SimulatedNotificationSender>();
+
+builder.Services.AddScoped<TransactionApplicationService>(services =>
+	new TransactionApplicationService(
+		services.GetRequiredService<IApexPostRepository>(),
+		services.GetRequiredService<TimeProvider>(),
+		services.GetRequiredService<DomainEventPublisher>(),
+		lowStockThreshold));
+builder.Services.AddScoped<StockAdjustmentApplicationService>(services =>
+	new StockAdjustmentApplicationService(
+		services.GetRequiredService<IApexPostRepository>(),
+		services.GetRequiredService<DomainEventPublisher>(),
+		lowStockThreshold,
+		services.GetRequiredService<TimeProvider>()));
+
 builder.Services.AddScoped<LowStockReportApplicationService>(services =>
 	new LowStockReportApplicationService(
 		services.GetRequiredService<IApexPostRepository>(),
 		lowStockThreshold));
+builder.Services.AddScoped<BranchDashboardApplicationService>(services =>
+	new BranchDashboardApplicationService(
+		services.GetRequiredService<IApexPostRepository>(),
+		services.GetRequiredService<ReferenceDataCache>(),
+		services.GetRequiredService<TimeProvider>(),
+		lowStockThreshold,
+		services.GetService<ICourierTrackingService>()));
+builder.Services.AddScoped<ProductCatalogueApplicationService>();
+builder.Services.AddScoped<ParcelStatusApplicationService>(services =>
+	new ParcelStatusApplicationService(
+		services.GetRequiredService<IApexPostRepository>(),
+		services.GetService<ICourierTrackingService>()));
 builder.Services.AddScoped<ShippingVolumeReportApplicationService>();
 builder.Services.AddScoped<BranchAuditorReportApplicationService>();
 builder.Services.AddScoped<DailyBranchSalesReportApplicationService>();
@@ -203,6 +313,66 @@ if (!string.IsNullOrWhiteSpace(moneyOrderThresholdAmount) ||
 
 	moneyOrderHighValueThreshold = new Money(
 		thresholdAmount, moneyOrderThresholdCurrency);
+}
+
+var moneyOrderFeeAmount =
+	builder.Configuration["MoneyOrders:Fee:Amount"];
+var moneyOrderFeeTaxCategory =
+	builder.Configuration["MoneyOrders:Fee:TaxCategory"];
+MoneyOrderBasketSettings? moneyOrderBasketSettings = null;
+if (!string.IsNullOrWhiteSpace(moneyOrderFeeAmount) ||
+	!string.IsNullOrWhiteSpace(moneyOrderFeeTaxCategory))
+{
+	if (moneyOrderHighValueThreshold is null ||
+		!decimal.TryParse(
+			moneyOrderFeeAmount,
+			NumberStyles.Number,
+			CultureInfo.InvariantCulture,
+			out var feeAmount) ||
+		feeAmount < 0m ||
+		!Enum.TryParse<TaxCategory>(
+			moneyOrderFeeTaxCategory,
+			ignoreCase: true,
+			out var feeTaxCategory) ||
+		!Enum.IsDefined(feeTaxCategory))
+	{
+		throw new InvalidOperationException(
+			"Configure MoneyOrders:HighValueThreshold, a non-negative MoneyOrders:Fee:Amount, and a defined MoneyOrders:Fee:TaxCategory together.");
+	}
+
+	moneyOrderBasketSettings = new MoneyOrderBasketSettings(
+		moneyOrderHighValueThreshold,
+		new Money(feeAmount, moneyOrderHighValueThreshold.Currency),
+		feeTaxCategory);
+}
+
+var acceptedDocumentTypes = builder.Configuration
+	.GetSection("MoneyOrders:Verification:AcceptedDocumentTypes")
+	.Get<string[]>() ?? [];
+if (acceptedDocumentTypes.Length > 0)
+{
+	var verificationTimeoutSeconds = builder.Configuration.GetValue<double?>(
+		"MoneyOrders:Verification:TimeoutSeconds");
+	var simulatedLatencyMilliseconds = builder.Configuration.GetValue<double?>(
+		"MoneyOrders:Verification:SimulatedLatencyMilliseconds") ?? 0d;
+	if (verificationTimeoutSeconds is not { } timeoutSeconds ||
+		!double.IsFinite(timeoutSeconds) || timeoutSeconds <= 0d ||
+		!double.IsFinite(simulatedLatencyMilliseconds) ||
+		simulatedLatencyMilliseconds < 0d)
+	{
+		throw new InvalidOperationException(
+			"Configure a positive MoneyOrders:Verification:TimeoutSeconds (and a non-negative SimulatedLatencyMilliseconds, if set) when accepted document types are configured.");
+	}
+
+	var verificationTimeout = TimeSpan.FromSeconds(timeoutSeconds);
+	var simulatedLatency = TimeSpan.FromMilliseconds(
+		simulatedLatencyMilliseconds);
+	builder.Services.AddSingleton<IIdentityVerificationService>(services =>
+		new SimulatedIdentityVerificationService(
+			acceptedDocumentTypes,
+			verificationTimeout,
+			simulatedLatency,
+			services.GetRequiredService<TimeProvider>()));
 }
 
 builder.Services.AddScoped<MoneyOrderApplicationService>(services =>
@@ -254,6 +424,21 @@ foreach (var serviceLevel in Enum.GetValues<ShippingServiceLevel>())
 		serviceLevel, new Weight(kilograms));
 }
 
+// Payment method names only (for example as shown on the counter screen);
+// no defaults, so counter sales stay disabled until configured.
+var configuredPaymentMethods = builder.Configuration
+	.GetSection("Transactions:PaymentMethods")
+	.Get<string[]>() ?? [];
+if (configuredPaymentMethods.Any(string.IsNullOrWhiteSpace) ||
+	configuredPaymentMethods
+		.Select(method => method.Trim())
+		.Distinct(StringComparer.OrdinalIgnoreCase)
+		.Count() != configuredPaymentMethods.Length)
+{
+	throw new InvalidOperationException(
+		"Transactions:PaymentMethods must contain distinct, non-blank names.");
+}
+
 TaxCategory? configuredShippingTaxCategory = null;
 var configuredShippingTaxCategoryValue =
 	builder.Configuration["Shipping:TaxCategory"];
@@ -277,7 +462,13 @@ builder.Services.AddScoped<MixedBasketApplicationService>(services =>
 		services.GetRequiredService<IApexPostRepository>(),
 		configuredTaxRates,
 		configuredMaximumParcelWeights,
-		configuredShippingTaxCategory));
+		configuredShippingTaxCategory,
+		services.GetRequiredService<TimeProvider>(),
+		moneyOrderBasketSettings,
+		services.GetService<IIdentityVerificationService>(),
+		services.GetRequiredService<DomainEventPublisher>(),
+		lowStockThreshold,
+		configuredPaymentMethods));
 
 var auditFile = builder.Configuration["Audit:FilePath"];
 
@@ -327,8 +518,14 @@ builder.Services.AddRateLimiter(options =>
 var protectedPartnerPathPrefixes = builder.Configuration
 	.GetSection("ApiSecurity:ProtectedPathPrefixes")
 	.Get<string[]>() ?? [];
+// Partner endpoints ([RequireApiKey] metadata, or a configured path prefix)
+// accept requests only when an API key is configured; without one they fail
+// closed with 500. Whenever partner access is possible, the per-partner rate
+// limit is required, so every validated partner request is rate limited.
+var partnerAccessEnabled = protectedPartnerPathPrefixes.Length > 0 ||
+	!string.IsNullOrWhiteSpace(builder.Configuration["ApiSecurity:ApiKey"]);
 PartitionedRateLimiter<HttpContext>? partnerRateLimiter = null;
-if (protectedPartnerPathPrefixes.Length > 0)
+if (partnerAccessEnabled)
 {
 	var partnerPermitLimit = builder.Configuration.GetValue<int?>(
 		"ApiSecurity:PartnerRateLimit:PermitLimit");
@@ -338,7 +535,7 @@ if (protectedPartnerPathPrefixes.Length > 0)
 		partnerWindowSeconds is null or <= 0)
 	{
 		throw new InvalidOperationException(
-			"Configure positive ApiSecurity:PartnerRateLimit:PermitLimit and WindowSeconds when partner path prefixes are enabled.");
+			"Configure positive ApiSecurity:PartnerRateLimit:PermitLimit and WindowSeconds when a partner API key or partner path prefixes are configured.");
 	}
 
 	partnerRateLimiter = PartitionedRateLimiter.Create<HttpContext, string>(
@@ -367,11 +564,28 @@ if (protectedPartnerPathPrefixes.Length > 0)
 
 var app = builder.Build();
 
+app.Services.GetRequiredService<SimulatedNotificationSender>()
+	.Subscribe(app.Services.GetRequiredService<DomainEventPublisher>());
+
 if (app.Configuration.GetValue<bool>("DemoData:Initialize"))
 {
 	await app.Services
 		.GetRequiredService<DemoDataInitializer>()
 		.InitializeAsync();
+
+	if (demoStaffPassword is null)
+	{
+		app.Logger.LogWarning(
+			"Demo data is enabled but DemoData:StaffPassword is not set, so demo staff cannot sign in.");
+	}
+	else
+	{
+		var added = await app.Services
+			.GetRequiredService<DemoCredentialProvisioner>()
+			.ProvisionAsync(demoStaffPassword);
+		app.Logger.LogInformation(
+			"Provisioned {Count} demo staff login(s).", added);
+	}
 }
 
 // Configure the HTTP request pipeline.
@@ -394,6 +608,7 @@ app.UseRouting();
 app.UseCors("ParcelTracking");
 
 app.UseMiddleware<ApiKeyAndIpRestrictionMiddleware>();
+app.UseMiddleware<AdminIpRestrictionMiddleware>();
 if (partnerRateLimiter is not null)
 	app.UseMiddleware<PartnerRateLimitingMiddleware>();
 

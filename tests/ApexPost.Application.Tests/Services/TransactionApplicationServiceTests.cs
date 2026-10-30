@@ -476,6 +476,66 @@ public sealed class TransactionApplicationServiceTests
 		Assert.Empty((await repository.LoadAsync()).TransactionBaskets);
 	}
 
+	[Theory]
+	[InlineData("void")]
+	[InlineData("refund")]
+	public async Task StatusChangeAsync_PaidSaleReturnsStockOnce(string action)
+	{
+		var repository = new InMemoryApexPostRepository(CreateSnapshot());
+		var service = new TransactionApplicationService(repository);
+		var transactionId = await CreateGoodsBasketAsync(service);
+		await service.ProcessSaleAsync(transactionId, "manager-1", BranchOne);
+		Assert.Equal(
+			2,
+			Assert.Single((await repository.LoadAsync()).BranchStocks).Quantity);
+
+		await (action == "void"
+			? service.VoidAsync(transactionId, "manager-1", "Sale cancelled")
+			: service.RefundAsync(transactionId, "manager-1", "Customer request"));
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.VoidAsync(transactionId, "manager-1", "Repeated request"));
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.RefundAsync(transactionId, "manager-1", "Repeated request"));
+		var snapshot = await repository.LoadAsync();
+		Assert.Equal(4, Assert.Single(snapshot.BranchStocks).Quantity);
+		var basket = Assert.Single(snapshot.TransactionBaskets);
+		Assert.Equal(
+			action == "void"
+				? TransactionPaymentStatus.Voided
+				: TransactionPaymentStatus.Refunded,
+			basket.PaymentStatus);
+		Assert.Single(basket.Notifications);
+	}
+
+	[Fact]
+	public async Task VoidAsync_WhenStockRecordIsMissing_PersistsNoChange()
+	{
+		var repository = new InMemoryApexPostRepository(CreateSnapshot());
+		var service = new TransactionApplicationService(repository);
+		var transactionId = await CreateGoodsBasketAsync(service);
+		await service.ProcessSaleAsync(transactionId, "manager-1", BranchOne);
+		var soldSnapshot = await repository.LoadAsync();
+		await repository.SaveAsync(new ApexPostSnapshot(
+			soldSnapshot.Branches,
+			soldSnapshot.Staff,
+			soldSnapshot.Products,
+			[],
+			soldSnapshot.ShippingItems,
+			soldSnapshot.ShippingRates,
+			soldSnapshot.MoneyOrders,
+			soldSnapshot.IdentityVerifications,
+			soldSnapshot.TransactionBaskets));
+
+		await Assert.ThrowsAsync<InvalidOperationException>(() =>
+			service.VoidAsync(transactionId, "manager-1", "Sale cancelled"));
+
+		var basket = Assert.Single(
+			(await repository.LoadAsync()).TransactionBaskets);
+		Assert.Equal(TransactionPaymentStatus.Paid, basket.PaymentStatus);
+		Assert.Empty(basket.Notifications);
+	}
+
 	private static async Task<Guid> CreateGoodsBasketAsync(
 		TransactionApplicationService service)
 	{

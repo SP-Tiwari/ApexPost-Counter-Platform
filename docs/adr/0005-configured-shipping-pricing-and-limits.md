@@ -17,6 +17,12 @@ Represent shipping rates using the existing `ShippingRate` value object, keyed b
 
 There are no production defaults for these prices, tax values, or parcel limits. Missing or mismatched rates/configuration cause shipping processing to fail rather than selecting an invented value. Parcel limits apply to parcels; letters are exempt from this parcel-specific limit.
 
+## Alternatives considered
+
+- **A strategy class per service level (`StandardPricing`, `ExpressPricing`, …).** That bakes prices into code and needs a release for every price change. The rate table is data, and the formula is the only fixed part.
+- **Pricing delegates (`Func<ShippingItem, Money>`).** Flexible, but there was no requirement for per-call custom formulas, and data-driven rates are easier to audit.
+- **Defaults when configuration is missing.** Rejected: a guessed price or weight limit is worse than a disabled workflow.
+
 ## Consequences
 
 Operators must configure the applicable tax and weight settings and provision rate records before enabling the corresponding shipping workflow. Configuration mistakes are surfaced instead of silently substituted. Demo data, if explicitly initialized, contains visibly fictional rate fixtures and is not production policy.

@@ -1,11 +1,20 @@
 using ApexPost.Application.Persistence;
+using ApexPost.Web.Filters;
+using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace ApexPost.Web.Controllers;
 
 [Authorize(Roles = nameof(StaffRole.Administrator))]
+[RequireAdminNetwork]
 [Route("[controller]/[action]")]
-public sealed class AdministrationController(AdministrationApplicationService administration) : Controller
+public sealed class AdministrationController(AdministrationApplicationService administration) : Controller, IInvalidModelStateHandler
 {
+	// Every administration form posts back to the Index page.
+	async Task<IActionResult?> IInvalidModelStateHandler.HandleInvalidModelStateAsync(ActionExecutingContext context) =>
+		HttpMethods.IsPost(context.HttpContext.Request.Method)
+			? await BadFormAsync(context.HttpContext.RequestAborted)
+			: null;
+
 	[HttpGet]
 	public async Task<IActionResult> Index(CancellationToken cancellationToken)
 	{
@@ -13,7 +22,7 @@ public sealed class AdministrationController(AdministrationApplicationService ad
 		catch (UnauthorizedAccessException) { return Forbid(); }
 	}
 
-	[HttpPost, ValidateAntiForgeryToken]
+	[HttpPost, ValidateAntiForgeryToken, Audited]
 	public async Task<IActionResult> CreateStaff(CreateStaffViewModel model, CancellationToken cancellationToken)
 	{
 		if (!ModelState.IsValid) return await BadFormAsync(cancellationToken);
@@ -21,7 +30,7 @@ public sealed class AdministrationController(AdministrationApplicationService ad
 		catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or KeyNotFoundException) { ModelState.AddModelError(string.Empty, exception.Message); return await BadFormAsync(cancellationToken); }
 	}
 
-	[HttpPost, ValidateAntiForgeryToken]
+	[HttpPost, ValidateAntiForgeryToken, Audited]
 	public async Task<IActionResult> CreateBranch(CreateBranchViewModel model, CancellationToken cancellationToken)
 	{
 		if (!ModelState.IsValid) return await BadFormAsync(cancellationToken);
@@ -29,7 +38,7 @@ public sealed class AdministrationController(AdministrationApplicationService ad
 		catch (Exception exception) when (exception is ArgumentException or InvalidOperationException) { ModelState.AddModelError(string.Empty, exception.Message); return await BadFormAsync(cancellationToken); }
 	}
 
-	[HttpPost, ValidateAntiForgeryToken]
+	[HttpPost, ValidateAntiForgeryToken, Audited]
 	public async Task<IActionResult> CreateProduct(CreateProductViewModel model, CancellationToken cancellationToken)
 	{
 		if (!ModelState.IsValid || model.UnitPrice is null) return await BadFormAsync(cancellationToken);
@@ -37,14 +46,14 @@ public sealed class AdministrationController(AdministrationApplicationService ad
 		catch (Exception exception) when (exception is ArgumentException or InvalidOperationException) { ModelState.AddModelError(string.Empty, exception.Message); return await BadFormAsync(cancellationToken); }
 	}
 
-	[HttpPost, ValidateAntiForgeryToken]
+	[HttpPost, ValidateAntiForgeryToken, Audited]
 	public async Task<IActionResult> SetBranchStatus(string code, bool isActive, CancellationToken cancellationToken)
 	{
 		try { await administration.SetBranchStatusAsync(StaffId(), code, isActive, cancellationToken); return RedirectToAction(nameof(Index)); }
 		catch (Exception exception) when (exception is ArgumentException or KeyNotFoundException) { ModelState.AddModelError(string.Empty, exception.Message); return await BadFormAsync(cancellationToken); }
 	}
 
-	[HttpPost, ValidateAntiForgeryToken]
+	[HttpPost, ValidateAntiForgeryToken, Audited]
 	public async Task<IActionResult> UpdateStaff(
 		string staffId, StaffRole role, string homeBranchCode, bool isActive,
 		CancellationToken cancellationToken)

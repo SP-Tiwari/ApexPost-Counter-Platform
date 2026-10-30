@@ -304,7 +304,7 @@ public sealed class StockControllerTests : IAsyncLifetime
 	private static WebApplicationFactory<Program> CreateFactory(
 		string storageDirectory,
 		string auditFilePath) =>
-		new WebApplicationFactory<Program>()
+		new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", storageDirectory);

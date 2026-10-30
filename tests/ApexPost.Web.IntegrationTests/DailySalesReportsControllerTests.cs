@@ -22,7 +22,7 @@ public sealed class DailySalesReportsControllerTests : IAsyncLifetime
 		_storageDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-DailySales-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(_storageDirectory);
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting("Storage:Directory", _storageDirectory);
@@ -60,7 +60,8 @@ public sealed class DailySalesReportsControllerTests : IAsyncLifetime
 			[CreateStaff(ManagerId, StaffRole.BranchManager, "BR01")],
 			[
 				CreatePaidBasket("BR01", 100m, 20m),
-				CreatePaidBasket("BR02", 80m, 10m)
+				CreatePaidBasket("BR02", 80m, 10m),
+				CreatePaidBasket("BR01", 55m, 5m, dayOffset: -1)
 			]);
 		using var client = CreateClient("BranchManager", ManagerId, "BR01");
 
@@ -71,6 +72,8 @@ public sealed class DailySalesReportsControllerTests : IAsyncLifetime
 		var html = await response.Content.ReadAsStringAsync();
 		Assert.Matches(@"BR01</td>\s*<td>\d{1,2}/\d{1,2}/2026</td>\s*<td>100 INR</td>\s*<td>20 INR</td>\s*<td>120 INR</td>", html);
 		Assert.DoesNotContain("BR02", html, StringComparison.Ordinal);
+		// The previous day's sale is reported only for its own date.
+		Assert.DoesNotContain("55 INR", html, StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -138,7 +141,8 @@ public sealed class DailySalesReportsControllerTests : IAsyncLifetime
 	private static TransactionBasket CreatePaidBasket(
 		string branchCode,
 		decimal retail,
-		decimal service)
+		decimal service,
+		int dayOffset = 0)
 	{
 		var taxRates = new Dictionary<TaxCategory, decimal>
 		{
@@ -147,7 +151,9 @@ public sealed class DailySalesReportsControllerTests : IAsyncLifetime
 		var basket = new TransactionBasket(
 			"INR",
 			taxRates,
-			new BranchCode(branchCode));
+			new BranchCode(branchCode),
+			new DateTimeOffset(
+				ReportDate.AddDays(dayOffset), new TimeOnly(10, 0), TimeSpan.Zero));
 		basket.AddLineItem(new TransactionLineItem(
 			"Retail",
 			TransactionItemType.Goods,

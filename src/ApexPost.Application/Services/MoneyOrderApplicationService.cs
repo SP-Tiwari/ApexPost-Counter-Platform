@@ -1,11 +1,12 @@
 
 namespace ApexPost.Application.Services;
 
+// Reads the branch's money-order records for the list page. Money orders are
+// issued only as basket lines (MixedBasketApplicationService).
 public sealed class MoneyOrderApplicationService
 {
 	private readonly IApexPostRepository _repository;
 	private readonly Money? _highValueThreshold;
-	private readonly MoneyOrderIdentityVerificationRule? _verificationRule;
 
 	public MoneyOrderApplicationService(
 		IApexPostRepository repository,
@@ -14,16 +15,9 @@ public sealed class MoneyOrderApplicationService
 		ArgumentNullException.ThrowIfNull(repository);
 		_repository = repository;
 		_highValueThreshold = highValueThreshold;
-		_verificationRule = highValueThreshold is null
-			? null
-			: new MoneyOrderIdentityVerificationRule(highValueThreshold);
 	}
 
-	public bool IsConfigured => _verificationRule is not null;
-
-	public string? Currency => _verificationRule is null
-		? null
-		: _highValueThreshold!.Currency;
+	public bool IsConfigured => _highValueThreshold is not null;
 
 	public async Task<IReadOnlyList<MoneyOrder>> GetMoneyOrdersAsync(
 		string staffId,
@@ -36,51 +30,6 @@ public sealed class MoneyOrderApplicationService
 			.Where(order =>
 				order.ProcessingBranchCode == staff.HomeBranchCode)
 			.ToArray());
-	}
-
-	public Task CreateAndProcessAsync(
-		string staffId,
-		decimal amount,
-		string sender,
-		string recipient,
-		decimal fee,
-		IdentityVerification? verification,
-		CancellationToken cancellationToken = default)
-	{
-		if (string.IsNullOrWhiteSpace(staffId))
-			throw new UnauthorizedAccessException(
-				"An active Branch Manager is required to process a money order.");
-		if (_verificationRule is null || _highValueThreshold is null)
-			throw new InvalidOperationException(
-				"Money-order high-value threshold is not configured.");
-
-		return _repository.UpdateAsync(snapshot =>
-		{
-			var staff = FindActiveBranchManager(snapshot, staffId);
-
-			var moneyOrder = new MoneyOrder(
-				new Money(amount, _highValueThreshold.Currency),
-				sender,
-				recipient,
-				new Money(fee, _highValueThreshold.Currency),
-				verification,
-				staff.HomeBranchCode);
-			_verificationRule.EnsureVerification(moneyOrder, verification);
-
-			var updatedVerifications = verification is null
-				? snapshot.IdentityVerifications
-				: snapshot.IdentityVerifications.Append(verification);
-			return new ApexPostSnapshot(
-				snapshot.Branches,
-				snapshot.Staff,
-				snapshot.Products,
-				snapshot.BranchStocks,
-				snapshot.ShippingItems,
-				snapshot.ShippingRates,
-				snapshot.MoneyOrders.Append(moneyOrder),
-				updatedVerifications,
-				snapshot.TransactionBaskets);
-		}, cancellationToken);
 	}
 
 	private static Staff FindActiveBranchManager(

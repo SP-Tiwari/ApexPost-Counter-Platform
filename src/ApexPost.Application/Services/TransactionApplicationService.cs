@@ -1,3 +1,5 @@
+using ApexPost.Application.Events;
+using ApexPost.Domain.Events;
 
 namespace ApexPost.Application.Services;
 
@@ -7,11 +9,24 @@ public sealed class TransactionApplicationService
 	private readonly TransactionProcessingRule _processingRule = new();
 	private readonly TransactionAccessRule _accessRule = new();
 	private readonly TransactionVoidRefundRule _voidRefundRule = new();
+	private readonly TimeProvider _timeProvider;
+	private readonly DomainEventPublisher? _events;
+	private readonly int? _lowStockThreshold;
 
-	public TransactionApplicationService(IApexPostRepository repository)
+	public TransactionApplicationService(
+		IApexPostRepository repository,
+		TimeProvider? timeProvider = null,
+		DomainEventPublisher? events = null,
+		int? lowStockThreshold = null)
 	{
 		ArgumentNullException.ThrowIfNull(repository);
+		if (lowStockThreshold < 0)
+			throw new ArgumentOutOfRangeException(
+				nameof(lowStockThreshold), "Low-stock threshold cannot be negative.");
 		_repository = repository;
+		_timeProvider = timeProvider ?? TimeProvider.System;
+		_events = events;
+		_lowStockThreshold = lowStockThreshold;
 	}
 
 	public async Task<IReadOnlyList<TransactionBasketSnapshot>>
@@ -39,9 +54,9 @@ public sealed class TransactionApplicationService
 
 		var snapshot = await _repository.LoadAsync(cancellationToken)
 			.ConfigureAwait(false);
-		var staff = FindActiveBranchManager(snapshot, staffId);
+		var staff = FindActiveTransactionViewer(snapshot, staffId);
 		var basket = FindBasket(snapshot, transactionId);
-		if (!_accessRule.CanAccess(staff, basket))
+		if (!_accessRule.CanView(staff, basket))
 			throw new KeyNotFoundException(
 				$"Transaction '{transactionId}' was not found.");
 		return basket.GetSnapshot();
@@ -52,7 +67,10 @@ public sealed class TransactionApplicationService
 		IReadOnlyDictionary<TaxCategory, decimal> taxRates,
 		CancellationToken cancellationToken = default)
 	{
-		var basket = new TransactionBasket(currency, taxRates);
+		var basket = new TransactionBasket(
+			currency,
+			taxRates,
+			occurredAtUtc: _timeProvider.GetUtcNow());
 		await _repository.UpdateAsync(snapshot =>
 		{
 			if (snapshot.TransactionBaskets.Any(
@@ -90,14 +108,16 @@ public sealed class TransactionApplicationService
 		}, cancellationToken);
 	}
 
-	public Task ProcessSaleAsync(
+	public async Task ProcessSaleAsync(
 		Guid transactionId,
 		string staffId,
 		BranchCode branchCode,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(branchCode);
-		return _repository.UpdateAsync(snapshot =>
+		// Collected inside the update; published only once it has been saved.
+		IReadOnlyList<DomainEvent> committedEvents = [];
+		await _repository.UpdateAsync(snapshot =>
 		{
 			var basket = FindBasket(snapshot, transactionId);
 			var staff = FindStaff(snapshot, staffId);
@@ -105,43 +125,88 @@ public sealed class TransactionApplicationService
 				snapshot.Branches,
 				candidate => candidate.Code == branchCode,
 				$"Branch '{branchCode}'");
+			var quantitiesBefore = LowStockEvents.CaptureQuantities(
+				snapshot.BranchStocks,
+				branch.Code,
+				basket.LineItems
+					.Select(lineItem => lineItem.ProductSku)
+					.OfType<Sku>());
 			_processingRule.Process(
 				staff, branch, basket, snapshot.BranchStocks);
+
+			var occurredAtUtc = _timeProvider.GetUtcNow();
+			committedEvents =
+			[
+				new TransactionCompletedEvent(
+					basket.Id, branch.Code, staffId, basket.Total, occurredAtUtc),
+				.. LowStockEvents.Evaluate(
+					snapshot.BranchStocks,
+					branch.Code,
+					quantitiesBefore,
+					_lowStockThreshold,
+					occurredAtUtc)
+			];
 			return snapshot;
-		}, cancellationToken);
+		}, cancellationToken).ConfigureAwait(false);
+
+		_events?.Publish(committedEvents);
 	}
 
-	public Task VoidAsync(
+	public async Task VoidAsync(
 		Guid transactionId,
 		string staffId,
 		string reason,
-		CancellationToken cancellationToken = default) =>
-		_repository.UpdateAsync(snapshot =>
+		CancellationToken cancellationToken = default)
+	{
+		TransactionVoidedEvent? committedEvent = null;
+		await _repository.UpdateAsync(snapshot =>
 		{
 			var basket = FindBasket(snapshot, transactionId);
 			var staff = FindActiveBranchManager(snapshot, staffId);
 			if (!_accessRule.CanAccess(staff, basket))
 				throw new KeyNotFoundException(
 					$"Transaction '{transactionId}' was not found.");
-			_voidRefundRule.Void(staff, basket, reason);
+			_voidRefundRule.Void(
+				staff, basket, reason, snapshot.BranchStocks);
+			committedEvent = new TransactionVoidedEvent(
+				basket.Id,
+				basket.BranchCode,
+				staffId,
+				reason.Trim(),
+				_timeProvider.GetUtcNow());
 			return snapshot;
-		}, cancellationToken);
+		}, cancellationToken).ConfigureAwait(false);
 
-	public Task RefundAsync(
+		_events?.Publish([committedEvent!]);
+	}
+
+	public async Task RefundAsync(
 		Guid transactionId,
 		string staffId,
 		string reason,
-		CancellationToken cancellationToken = default) =>
-		_repository.UpdateAsync(snapshot =>
+		CancellationToken cancellationToken = default)
+	{
+		TransactionRefundedEvent? committedEvent = null;
+		await _repository.UpdateAsync(snapshot =>
 		{
 			var basket = FindBasket(snapshot, transactionId);
 			var staff = FindActiveBranchManager(snapshot, staffId);
 			if (!_accessRule.CanAccess(staff, basket))
 				throw new KeyNotFoundException(
 					$"Transaction '{transactionId}' was not found.");
-			_voidRefundRule.Refund(staff, basket, reason);
+			_voidRefundRule.Refund(
+				staff, basket, reason, snapshot.BranchStocks);
+			committedEvent = new TransactionRefundedEvent(
+				basket.Id,
+				basket.BranchCode,
+				staffId,
+				reason.Trim(),
+				_timeProvider.GetUtcNow());
 			return snapshot;
-		}, cancellationToken);
+		}, cancellationToken).ConfigureAwait(false);
+
+		_events?.Publish([committedEvent!]);
+	}
 
 	private static TransactionBasket FindBasket(
 		ApexPostSnapshot snapshot,
@@ -186,6 +251,30 @@ public sealed class TransactionApplicationService
 		{
 			throw new UnauthorizedAccessException(
 				"An active Branch Manager is required.");
+		}
+
+		return matches[0];
+	}
+
+	// Branch Managers and Counter Clerks may read a transaction; which ones
+	// each can see is decided by TransactionAccessRule.CanView.
+	private static Staff FindActiveTransactionViewer(
+		ApexPostSnapshot snapshot,
+		string staffId)
+	{
+		if (string.IsNullOrWhiteSpace(staffId))
+			throw new UnauthorizedAccessException(
+				"An active Branch Manager or Counter Clerk is required.");
+		var matches = snapshot.Staff.Where(person =>
+			string.Equals(
+				person.Id, staffId, StringComparison.Ordinal))
+			.Take(2).ToArray();
+		if (matches.Length != 1 ||
+			!matches[0].IsActive ||
+			matches[0].Role is not (StaffRole.BranchManager or StaffRole.CounterClerk))
+		{
+			throw new UnauthorizedAccessException(
+				"An active Branch Manager or Counter Clerk is required.");
 		}
 
 		return matches[0];

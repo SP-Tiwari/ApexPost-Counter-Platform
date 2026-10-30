@@ -29,7 +29,12 @@ public sealed record BranchAuditorReportRow(
 	int MoneyOrderCount,
 	int IdentityVerificationCount,
 	int SuccessfulIdentityVerificationCount,
-	int FailedIdentityVerificationCount);
+	int FailedIdentityVerificationCount)
+{
+	// Included in MoneyOrderCount; cancelled when their transaction was
+	// voided or refunded.
+	public int CancelledMoneyOrderCount { get; init; }
+}
 
 public sealed class BranchAuditorReportService
 {
@@ -38,7 +43,8 @@ public sealed class BranchAuditorReportService
 	{
 		ArgumentNullException.ThrowIfNull(entries);
 
-		var totals = new Dictionary<BranchCode, (int Orders, int Successful, int Failed)>();
+		var totals = new Dictionary<BranchCode,
+			(int Orders, int Cancelled, int Successful, int Failed)>();
 		foreach (var entry in entries)
 		{
 			ArgumentNullException.ThrowIfNull(entry);
@@ -46,6 +52,8 @@ public sealed class BranchAuditorReportService
 			var current = totals.GetValueOrDefault(entry.BranchCode);
 			totals[entry.BranchCode] = (
 				checked(current.Orders + (entry.MoneyOrder is null ? 0 : 1)),
+				checked(current.Cancelled
+					+ (entry.MoneyOrder?.Status == MoneyOrderStatus.Cancelled ? 1 : 0)),
 				checked(current.Successful
 					+ (entry.IdentityVerification?.IsSuccessful == true ? 1 : 0)),
 				checked(current.Failed
@@ -58,7 +66,10 @@ public sealed class BranchAuditorReportService
 				pair.Value.Orders,
 				checked(pair.Value.Successful + pair.Value.Failed),
 				pair.Value.Successful,
-				pair.Value.Failed))
+				pair.Value.Failed)
+			{
+				CancelledMoneyOrderCount = pair.Value.Cancelled
+			})
 			.OrderBy(row => row.BranchCode.Value, StringComparer.Ordinal)
 			.ToArray();
 	}

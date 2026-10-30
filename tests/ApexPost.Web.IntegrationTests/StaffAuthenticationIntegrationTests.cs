@@ -262,6 +262,27 @@ public sealed class StaffAuthenticationIntegrationTests : IAsyncLifetime
 			response.Headers.Location?.AbsolutePath);
 		Assert.Equal(nameof(StaffRole.CounterClerk), _claimCapture.Role);
 		Assert.Equal("AUTH01", _claimCapture.BranchCode);
+
+		// Following the redirect, the access-denied page itself answers 403.
+		var deniedPage = await client.GetAsync(response.Headers.Location);
+		Assert.Equal(System.Net.HttpStatusCode.Forbidden, deniedPage.StatusCode);
+		Assert.Contains(
+			"<h1",
+			await deniedPage.Content.ReadAsStringAsync(),
+			StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task AccessDeniedPage_Returns403EvenWhenOpenedDirectly()
+	{
+		var client = CreateSecureClient();
+
+		var response = await client.GetAsync("/Account/AccessDenied");
+
+		Assert.Equal(System.Net.HttpStatusCode.Forbidden, response.StatusCode);
+		Assert.Equal(
+			"text/html",
+			response.Content.Headers.ContentType?.MediaType);
 	}
 
 	[Fact]
@@ -308,7 +329,7 @@ public sealed class StaffAuthenticationIntegrationTests : IAsyncLifetime
 	}
 
 	private WebApplicationFactory<Program> CreateFactory(int permitLimit = 5) =>
-		new WebApplicationFactory<Program>()
+		new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting(

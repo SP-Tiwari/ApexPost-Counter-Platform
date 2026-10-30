@@ -59,12 +59,18 @@ public class TransactionBasketPaymentStatusTests
 	}
 
 	[Fact]
-	public void Void_WhenAlreadyPaid_ThrowsInvalidOperationException()
+	public void Void_WhenPaid_ChangesStatusToVoided()
 	{
 		var basket = CreatePopulatedBasket();
 		basket.Pay();
 
-		Assert.Throws<InvalidOperationException>(() => Void(basket, "Invalid state"));
+		Void(basket, "Sale cancelled");
+
+		Assert.Equal(TransactionPaymentStatus.Voided, basket.PaymentStatus);
+		Assert.Equal(
+			"Sale cancelled",
+			Assert.IsType<TransactionVoidedNotification>(
+				Assert.Single(basket.Notifications)).Reason);
 	}
 
 	[Fact]
@@ -128,10 +134,10 @@ public class TransactionBasketPaymentStatusTests
 	}
 
 	private static void Void(TransactionBasket basket, string reason = "Test void reason") =>
-		new TransactionVoidRefundRule().Void(CreateBranchManager(), basket, reason);
+		new TransactionVoidRefundRule().Void(CreateBranchManager(), basket, reason, []);
 
 	private static void Refund(TransactionBasket basket, string reason = "Test refund reason") =>
-		new TransactionVoidRefundRule().Refund(CreateBranchManager(), basket, reason);
+		new TransactionVoidRefundRule().Refund(CreateBranchManager(), basket, reason, []);
 
 	private static Staff CreateBranchManager() =>
 		new(

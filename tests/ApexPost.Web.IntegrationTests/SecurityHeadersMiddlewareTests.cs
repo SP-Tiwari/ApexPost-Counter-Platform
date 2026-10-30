@@ -11,7 +11,7 @@ public sealed class SecurityHeadersMiddlewareTests : IAsyncLifetime
 		_rootDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-SecurityHeaders-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(_rootDirectory);
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseSetting(

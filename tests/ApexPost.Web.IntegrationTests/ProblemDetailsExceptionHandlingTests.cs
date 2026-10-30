@@ -16,7 +16,7 @@ public sealed class ProblemDetailsExceptionHandlingTests : IAsyncLifetime
 		_rootDirectory = Path.Combine(
 			Path.GetTempPath(), $"ApexPost-ProblemDetails-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(_rootDirectory);
-		_factory = new WebApplicationFactory<Program>()
+		_factory = new ApexPostWebApplicationFactory()
 			.WithWebHostBuilder(builder =>
 			{
 				builder.UseEnvironment(Environments.Production);

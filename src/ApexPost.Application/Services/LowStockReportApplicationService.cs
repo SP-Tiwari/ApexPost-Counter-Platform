@@ -1,4 +1,5 @@
 using ApexPost.Domain.Reporting;
+using ApexPost.Domain.Specifications;
 
 namespace ApexPost.Application.Services;
 
@@ -50,7 +51,7 @@ public sealed class LowStockReportApplicationService
 				"Reports:LowStockThreshold is not configured.");
 
 		var branchStocks = snapshot.BranchStocks
-			.Where(stock => stock.BranchCode == matches[0].HomeBranchCode);
+			.Matching(new StockAtBranchSpecification(matches[0].HomeBranchCode));
 		return _reportService.CreateReport(branchStocks, _threshold.Value);
 	}
 }

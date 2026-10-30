@@ -1,8 +1,149 @@
-﻿@{
-    ViewData["Title"] = "Home Page";
+﻿@model ApexPost.Application.Services.BranchDashboard?
+@using ApexPost.Application.Courier
+@{
+    ViewData["Title"] = "Branch dashboard";
 }
 
-<div class="text-center">
-    <h1 class="display-4">Welcome</h1>
-    <p>Learn about <a href="https://learn.microsoft.com/aspnet/core">building Web apps with ASP.NET Core</a>.</p>
+@if (Model is null)
+{
+    <div class="text-center">
+        <h1 class="display-5">ApexPost Counter Platform</h1>
+        <p>Sign in with your staff account to see your branch dashboard.</p>
+        <a class="btn btn-primary" asp-controller="Account" asp-action="SignIn">Sign in</a>
+    </div>
+    return;
+}
+
+<h1>@Model.Branch.Name (@Model.Branch.Code.Value)</h1>
+<p>
+    Signed in as @Model.StaffName (@Model.Role).
+    Branch status: <strong>@(Model.Branch.IsActive ? "Open" : "Closed")</strong>,
+    region @Model.Branch.Region, hours @Model.Branch.OpeningHours.
+    Updated @Model.GeneratedAtUtc.ToString("yyyy-MM-dd HH:mm") UTC.
+</p>
+
+<div class="row">
+    <div class="col-md-4 mb-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h5 card-title">Counters</h2>
+                <p class="card-text">
+                    @Model.ActiveCounterCount of @Model.Branch.CounterTerminals.Count
+                    counter terminals active.
+                </p>
+                @if (Model.Role is ApexPost.Domain.Enums.StaffRole.CounterClerk
+                    or ApexPost.Domain.Enums.StaffRole.BranchManager)
+                {
+                    <a class="btn btn-primary" asp-controller="Transactions" asp-action="Create">
+                        New counter transaction
+                    </a>
+                }
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h5 card-title">Catalogue</h2>
+                <p class="card-text">
+                    @Model.ProductCount products and
+                    @Model.ShippingZoneCount shipping zones configured.
+                </p>
+            </div>
+        </div>
+    </div>
+    @if (Model.TodaySales is { } sales)
+    {
+        <div class="col-md-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h5 card-title">Today's sales (@sales.BusinessDate.ToString("yyyy-MM-dd"))</h2>
+                    @if (sales.Totals is { } totals)
+                    {
+                        <dl class="row mb-0">
+                            <dt class="col-6">Transactions</dt>
+                            <dd class="col-6">@sales.TransactionCount</dd>
+                            <dt class="col-6">Retail</dt>
+                            <dd class="col-6">@totals.RetailSales.Amount @totals.RetailSales.Currency</dd>
+                            <dt class="col-6">Services</dt>
+                            <dd class="col-6">@totals.ServiceSales.Amount @totals.ServiceSales.Currency</dd>
+                            <dt class="col-6">Total</dt>
+                            <dd class="col-6">@totals.TotalSales.Amount @totals.TotalSales.Currency</dd>
+                        </dl>
+                    }
+                    else
+                    {
+                        <p class="card-text">No paid transactions yet today.</p>
+                    }
+                    <a asp-controller="Reports" asp-action="DailySales">Daily sales report</a>
+                </div>
+            </div>
+        </div>
+    }
 </div>
+
+@if (Model.Role == ApexPost.Domain.Enums.StaffRole.BranchManager)
+{
+    <h2 class="h4 mt-3">Low stock</h2>
+    @if (Model.LowStock is null)
+    {
+        <p>Low-stock alerts need a configured low-stock threshold.</p>
+    }
+    else if (Model.LowStock.Count == 0)
+    {
+        <p>No products are at or below the low-stock threshold.</p>
+    }
+    else
+    {
+        <table class="table table-sm">
+            <thead>
+                <tr><th>Product</th><th>Quantity</th><th>Threshold</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var row in Model.LowStock)
+                {
+                    <tr>
+                        <td>@row.ProductSku.Value</td>
+                        <td>@row.Quantity</td>
+                        <td>@row.Threshold</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <a asp-controller="Reports" asp-action="LowStock">Low-stock report</a>
+    }
+
+    <h2 class="h4 mt-4">Today's shipments</h2>
+    @if (Model.RecentShipments is null)
+    {
+        <p>Courier tracking is not configured.</p>
+    }
+    else if (Model.RecentShipments.Count == 0)
+    {
+        <p>No shipments have been sent today.</p>
+    }
+    else
+    {
+        <table class="table table-sm">
+            <thead>
+                <tr><th>Shipment</th><th>Courier status</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var shipment in Model.RecentShipments)
+                {
+                    <tr>
+                        <td>@shipment.ShipmentId</td>
+                        <td>
+                            @(shipment.Outcome switch
+                            {
+                                CourierLookupOutcome.Available => shipment.Status,
+                                CourierLookupOutcome.TimedOut => "Courier did not respond in time",
+                                _ => "Courier lookup failed"
+                            })
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
